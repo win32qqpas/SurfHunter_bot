@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: poseidon-v4
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: your_telegram_bot_token
+      - key: STORMGLASS_API_KEY  
+        value: your_stormglass_api_key
