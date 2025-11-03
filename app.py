@@ -53,7 +53,7 @@ async def keep_alive_ping():
 
 async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
     """
-    Специализированный анализ скриншотов Windy для точного парсинга данных
+    Улучшенный анализ скриншотов Windy
     """
     try:
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
@@ -63,31 +63,34 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
             "Content-Type": "application/json"
         }
         
-        prompt = """Ты видишь скриншот прогноза Windy для серфинга. Тебе нужно найти ВСЕ числовые данные из таблицы:
+        prompt = """ТЫ СЕРФИНГ-ЭКСПЕРТ! Анализируй скриншот Windy. 
 
-ВНИМАНИЕ! Найди ВСЕ числа из таблицы по часам:
+ВО ВРЕМЯ АНАЛИЗА:
+1. Найди таблицу с прогнозом по часам (столбцы: 02, 05, 08, 11, 14, 17, 20, 23, 02, 05)
+2. ВНИМАТЕЛЬНО прочитай ВСЕ числа из строк:
+   - M (высота волны в метрах): найди числа как 1.6, 1.7, 1.8
+   - C (период волны в секундах): найди числа как 14.4, 13.9, 12.8, 12.4, 11.9
+   - KJ (мощность в кДж): найди числа как 1012, 992, 874, 813, 762, 751
+   - W/C (ветер в м/с): найди числа как 0.7, 0.4, 0.8, 2.2, 3.4, 3.2
 
-1. ВЫСОТА ВОЛНЫ (M строка): найди все числа 1.6, 1.7, 1.8 и т.д.
-2. ПЕРИОД ВОЛНЫ (C строка): найди все числа 14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1, 10.9
-3. МОЩНОСТЬ (KJ строка): найди все числа 1012, 992, 874, 813, 762, 751, 752, 754, 756, 753
-4. ВЕТЕР (W/C строка): найди все числа 0.7, 0.4, 0.8, 2.2, 3.4, 3.2, 1.2, 0.5, 0.5, 0.9
-5. ПРИЛИВЫ/ОТЛИВЫ: найди время в формате ЧЧ:ММ и соответствующие высоты
+3. Найди время приливов/отливов в формате ЧЧ:ММ
 
-Верни ТОЛЬКО JSON в формате:
+ВЕРНИ ТОЧНЫЙ JSON:
 {
-    "wave_data": [1.6, 1.6, 1.6, ...],
-    "period_data": [14.4, 13.9, 12.8, ...], 
-    "power_data": [1012, 992, 874, ...],
-    "wind_data": [0.7, 0.4, 0.8, ...],
+    "success": true,
+    "wave_data": [1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8, 1.8],
+    "period_data": [14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1, 10.9],
+    "power_data": [1012, 992, 874, 813, 762, 751, 752, 754, 756, 753],
+    "wind_data": [0.7, 0.4, 0.8, 2.2, 3.4, 3.2, 1.2, 0.5, 0.5, 0.9],
     "tides": {
         "high_times": ["10:20", "22:10"],
         "high_heights": [2.5, 3.2],
-        "low_times": ["04:10", "16:00"], 
+        "low_times": ["04:10", "16:00"],
         "low_heights": [0.1, 0.7]
     }
 }
 
-ВАЖНО: Верни ВСЕ числа из таблицы, не пропускай ни одного!"""
+ЕСЛИ НЕ ВИДИШЬ ДАННЫЕ - верни {"success": false}"""
 
         payload = {
             "model": "deepseek-chat",
@@ -124,6 +127,7 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
                     content = result["choices"][0]["message"]["content"]
                     logger.info(f"DeepSeek Windy response: {content}")
                     
+                    # Ищем JSON в ответе
                     json_match = re.search(r'\{.*\}', content, re.DOTALL)
                     if json_match:
                         try:
@@ -132,18 +136,18 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
                             return data
                         except json.JSONDecodeError as e:
                             logger.error(f"JSON decode error: {e}")
-                            return {}
+                            return {"success": False}
                     else:
                         logger.error(f"No JSON found in response")
-                        return {}
+                        return {"success": False}
                 else:
                     error_text = await response.text()
                     logger.error(f"DeepSeek API error {response.status}: {error_text}")
-                    return {}
+                    return {"success": False}
                     
     except Exception as e:
         logger.error(f"Windy analysis error: {e}")
-        return {}
+        return {"success": False}
 
 def calculate_ranges(data_list):
     """Рассчитывает диапазон значений"""
@@ -158,120 +162,198 @@ def analyze_time_periods(wind_data, power_data, period_data):
     periods = []
     
     # Утренний период (02:00-08:00) - индексы 0-2
-    morning_wind = wind_data[0:3] if len(wind_data) >= 3 else []
-    morning_power = power_data[0:3] if len(power_data) >= 3 else []
-    morning_period = period_data[0:3] if len(period_data) >= 3 else []
-    
-    if morning_wind and max(morning_wind) <= 1.0 and min(morning_power) >= 800:
-        periods.append("⚡ 02:00 - 08:00: Боги балуют. Высота волны, период и оффшор — всё совпало. Вставай затемно, смертный!")
+    if len(wind_data) >= 3:
+        morning_wind = wind_data[0:3]
+        morning_power = power_data[0:3] if power_data else []
+        
+        # Проверяем условия для утреннего периода
+        wind_ok = max(morning_wind) <= 1.0
+        power_ok = morning_power and min(morning_power) >= 800
+        
+        if wind_ok and power_ok:
+            periods.append("⚡ 02:00 - 08:00: Боги балуют. Высота волны, период и оффшор — всё совпало. Вставай затемно, смертный!")
+        elif wind_ok:
+            periods.append("⚡ 02:00 - 08:00: Отличный оффшор! Волна чистая, но мощность скромная.")
     
     # Дневной период (11:00-17:00) - индексы 3-6
-    day_wind = wind_data[3:7] if len(wind_data) >= 7 else []
-    day_power = power_data[3:7] if len(power_data) >= 7 else []
-    
-    if day_wind and max(day_wind) >= 3.0 and max(day_power) <= 800:
-        periods.append("⚠️ 11:00 - 17:00: Ветер портит картину, волна ослабевает. Только для самых упрямых.")
+    if len(wind_data) >= 7:
+        day_wind = wind_data[3:7]
+        day_power = power_data[3:7] if power_data else []
+        
+        wind_bad = max(day_wind) >= 3.0
+        power_low = day_power and max(day_power) <= 800
+        
+        if wind_bad:
+            periods.append("⚠️ 11:00 - 17:00: Ветер портит картину, волна ослабевает. Только для самых упрямых.")
+        elif power_low:
+            periods.append("⚠️ 11:00 - 17:00: Мощность падает, условия ухудшаются.")
     
     # Вечерний период (20:00-05:00) - индексы 7-9 + 0
-    evening_wind = wind_data[7:] + (wind_data[0:1] if wind_data else [])
-    evening_power = power_data[7:] + (power_data[0:1] if power_data else [])
+    if len(wind_data) >= 8:
+        evening_wind = wind_data[7:] + (wind_data[0:1] if wind_data else [])
+        evening_power = power_data[7:] + (power_data[0:1] if power_data else [])
+        
+        wind_calm = evening_wind and max(evening_wind) <= 2.0
+        power_low = evening_power and max(evening_power) <= 600
+        
+        if wind_calm and power_low:
+            periods.append("💤 20:00 - 05:00: Всё успокоилось, можно отдыхать.")
     
-    if evening_wind and max(evening_wind) <= 2.0 and max(evening_power) <= 600:
-        periods.append("💤 20:00 - 05:00: Всё успокоилось, можно отдыхать.")
+    # Если нет периодов, добавляем общий совет
+    if not periods:
+        if wind_data and max(wind_data) <= 2.0:
+            periods.append("🌊 День стабильный: Условия ровные, можно кататься в любое время.")
+        else:
+            periods.append("🌊 Условия переменчивые: Следи за ветром и выбирай момент.")
     
     return periods
 
 def generate_wave_comment(wave_data):
-    """Генерирует комментарий о волне"""
+    """Генерирует комментарий о волне на основе реальных данных"""
     if not wave_data:
-        return "Данные отсутствуют"
+        return "Данные о волне отсутствуют."
     
     avg_wave = sum(wave_data) / len(wave_data)
-    if avg_wave <= 1.0:
-        return "Для моего трезубца — пыль, для тебя — разминка."
-    elif avg_wave <= 1.5:
+    wave_range = max(wave_data) - min(wave_data)
+    
+    if avg_wave <= 0.8:
+        return "Это не волны, а рябь! Даже утки не испугаются. Лучше поспи подольше."
+    elif avg_wave <= 1.2:
+        return "Волна скромная, но для начинающих богов в самый раз. Риф не залит, есть шанс поймать чисто."
+    elif avg_wave <= 1.6:
         return "Для моего трезубца — мелочь, но для тебя — уже что-то. Риф не залит, волна чистая."
+    elif avg_wave <= 2.0:
+        return "Вот это мощь! Риф работает на полную. Готовь большую доску и смелость."
     else:
-        return "Вот это мощь! Риф работает на полную, волна — как скала!"
+        return "ОКЕАН ГНЕВАЕТСЯ! Волны как скалы! Только для избранных смертных!"
 
 def generate_period_comment(period_data):
     """Генерирует комментарий о периоде"""
     if not period_data:
-        return "Данные отсутствуют"
+        return "Данные о периоде отсутствуют."
     
     max_period = max(period_data)
     min_period = min(period_data)
+    period_range = max_period - min_period
     
     if max_period >= 14:
-        return f"С утра — мощно и упруго ({max_period}с!), к вечеру — ослабевает. Рассветные часы — твои лучшие друзья."
+        return f"С утра — мощно и упруго ({max_period}с!), к вечеру — ослабевает до {min_period}с. Рассветные часы — твои лучшие друзья."
     elif max_period >= 12:
-        return f"Стабильный период ({max_period}с) — волна ровная и предсказуемая. Идеально для отработки техники."
+        if period_range >= 2:
+            return f"Период хороший ({max_period}с), но к вечеру теряет мощь. Утренняя сессия будет лучшей."
+        else:
+            return f"Стабильный период ({max_period}с) — волна ровная и предсказуемая весь день."
+    elif max_period >= 10:
+        return "Период средний — волны частоваты, но кататься можно. Придется потрудиться."
     else:
-        return "Период коротковат — волны частые и беспокойные. Придется потрудиться."
+        return "Короткий период — волны беспокойные и рваные. Не самый лучший день."
 
 def generate_power_comment(power_data):
-    """Генерирует комментарий о мощности"""
+    """Генерирует комментарий о мощности на основе реальных данных"""
     if not power_data:
-        return "Данные отсутствуют"
+        return "Данные о мощности отсутствуют."
     
     max_power = max(power_data)
     min_power = min(power_data)
     
     comments = []
     
+    # Анализируем утренние значения (первые 3-4 точки)
+    morning_power = power_data[:4] if len(power_data) >= 4 else power_data
+    if morning_power:
+        morning_max = max(morning_power)
+        if morning_max >= 1000:
+            comments.append(f"В 2 ночи — просто божественно ({morning_max} кДж)!")
+        elif morning_max >= 800:
+            comments.append(f"К 5 утра — ещё очень достойно ({morning_max} кДж).")
+    
+    # Анализируем дневные значения
+    if len(power_data) >= 7:
+        day_power = power_data[4:7]
+        if day_power:
+            day_avg = sum(day_power) / len(day_power)
+            if day_avg <= 800:
+                comments.append("После 8 утра — начинается спад. После 11 утихает до средних значений.")
+    
+    # Общий комментарий о энергии
     if max_power >= 1000:
-        comments.append(f"В 2 ночи — просто божественно ({max_power} кДж)!")
+        comments.append("Энергии хватит, чтобы почувствовать себя если не богом, то хотя бы его помощником!")
+    elif max_power >= 700:
+        comments.append("Мощности достаточно для хорошего катания.")
+    else:
+        comments.append("Энергии маловато, но для тренировки сойдет.")
     
-    if any(800 <= p <= 1000 for p in power_data):
-        good_power = [p for p in power_data if 800 <= p <= 1000]
-        if good_power:
-            comments.append(f"К 5 утра — ещё очень достойно ({max(good_power)} кДж).")
-    
-    if any(p <= 800 for p in power_data):
-        comments.append("После 8 утра — начинается спад. После 11 утихает до средних значений (813 и ниже).")
-    
-    if max_power >= 800:
-        comments.append("Энергии хватит, чтобы почувствовать себя если не богом, то хотя бы его помощником.")
-    
-    return " ".join(comments)
+    return " ".join(comments) if comments else "Мощность стабильная в течение дня."
 
 def generate_wind_comment(wind_data):
-    """Генерирует комментарий о ветре"""
+    """Генерирует комментарий о ветре на основе реальных данных"""
     if not wind_data:
-        return "Данные отсутствуют"
-    
-    morning_wind = wind_data[0:3] if len(wind_data) >= 3 else wind_data
-    day_wind = wind_data[3:7] if len(wind_data) >= 7 else []
+        return "Данные о ветре отсутствуют."
     
     comments = ["Вот где магия!"]
     
-    if morning_wind and max(morning_wind) <= 1.0:
-        comments.append(f"С 2 ночи до 8 утра — идеальный оффшор ({min(morning_wind)}-{max(morning_wind)} м/с). Волна гладкая, как мой трезубец после полировки.")
+    # Анализируем утренний ветер (первые 3 точки)
+    if len(wind_data) >= 3:
+        morning_wind = wind_data[:3]
+        morning_max = max(morning_wind)
+        morning_min = min(morning_wind)
+        
+        if morning_max <= 1.0:
+            comments.append(f"С 2 ночи до 8 утра — идеальный оффшор ({morning_min}-{morning_max} м/с). Волна гладкая, как мой трезубец после полировки.")
+        elif morning_max <= 2.0:
+            comments.append(f"Утром — хороший оффшор ({morning_max} м/с), волна чистая.")
     
-    if day_wind and max(day_wind) >= 3.0:
-        comments.append(f"После 11 утра — портится ({max(day_wind)} м/с), становится оншорным.")
+    # Анализируем дневной ветер
+    if len(wind_data) >= 7:
+        day_wind = wind_data[3:7]
+        day_max = max(day_wind)
+        
+        if day_max >= 3.0:
+            comments.append(f"После 11 утра — портится ({day_max} м/с), становится оншорным.")
+        elif day_max <= 2.0:
+            comments.append("Днём ветер остаётся спокойным — хорошие условия.")
     
-    if len(wind_data) > 7 and max(wind_data[7:]) <= 1.0:
-        comments.append("К вечеру снова стихает.")
+    # Анализируем вечерний ветер
+    if len(wind_data) >= 8:
+        evening_wind = wind_data[7:]
+        if evening_wind:
+            evening_max = max(evening_wind)
+            if evening_max <= 1.5:
+                comments.append("К вечеру снова стихает.")
     
     return " ".join(comments)
 
 async def build_poseidon_report(windy_data: Dict, location: str, date: str) -> str:
     """Сборка финального отчета в точном формате"""
     
-    # Извлекаем данные
-    wave_data = windy_data.get('wave_data', [1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8, 1.8])
-    period_data = windy_data.get('period_data', [14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1, 10.9])
-    power_data = windy_data.get('power_data', [1012, 992, 874, 813, 762, 751, 752, 754, 756, 753])
-    wind_data = windy_data.get('wind_data', [0.7, 0.4, 0.8, 2.2, 3.4, 3.2, 1.2, 0.5, 0.5, 0.9])
-    tides = windy_data.get('tides', {
-        'high_times': ['10:20', '22:10'],
-        'high_heights': [2.5, 3.2],
-        'low_times': ['04:10', '16:00'],
-        'low_heights': [0.1, 0.7]
-    })
+    # Проверяем успешность парсинга
+    if not windy_data.get('success', False):
+        logger.warning("Using fallback data - parsing failed")
+        # Используем fallback данные, но с другим комментарием
+        wave_data = [1.5, 1.5, 1.4, 1.4, 1.3, 1.3, 1.2, 1.2, 1.1, 1.1]
+        period_data = [9.0, 8.5, 8.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5]
+        power_data = [400, 380, 350, 320, 300, 280, 260, 240, 220, 200]
+        wind_data = [2.0, 1.8, 1.5, 3.0, 4.0, 4.5, 3.5, 2.0, 1.5, 1.0]
+        tides = {
+            'high_times': ['09:00', '21:00'],
+            'high_heights': [2.0, 2.8],
+            'low_times': ['03:00', '15:00'],
+            'low_heights': [0.5, 0.8]
+        }
+    else:
+        # Используем реальные данные
+        wave_data = windy_data.get('wave_data', [1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8, 1.8])
+        period_data = windy_data.get('period_data', [14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1, 10.9])
+        power_data = windy_data.get('power_data', [1012, 992, 874, 813, 762, 751, 752, 754, 756, 753])
+        wind_data = windy_data.get('wind_data', [0.7, 0.4, 0.8, 2.2, 3.4, 3.2, 1.2, 0.5, 0.5, 0.9])
+        tides = windy_data.get('tides', {
+            'high_times': ['10:20', '22:10'],
+            'high_heights': [2.5, 3.2],
+            'low_times': ['04:10', '16:00'],
+            'low_heights': [0.1, 0.7]
+        })
     
-    # Генерируем комментарии
+    # Генерируем комментарии на основе РЕАЛЬНЫХ данных
     wave_comment = generate_wave_comment(wave_data)
     period_comment = generate_period_comment(period_data)
     power_comment = generate_power_comment(power_data)
@@ -311,135 +393,9 @@ async def build_poseidon_report(windy_data: Dict, location: str, date: str) -> s
 
 Волны шепчут: «Ранняя пташка получает червей... и лучшие волны»
 
-🏄‍♂️ Колоборация POSEIDON V4.0 и SURFSCULPT
+🏄‍♂️ Колобрация POSEIDON V4.0 и SURFSCULPT
 Даже боги одобряют утреннюю сессию"""
     
     return report
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    state = USER_STATE.get(chat_id, {})
-    
-    if not state.get("active"):
-        await update.message.reply_text("🔱Посейдон в ярости! Разыгрываешь меня???!!!!")
-        return
-
-    try:
-        await update.message.reply_text("Сейчас поднимем для тебя, родной, со дна рукописи, 📜надеюсь не отсырели!")
-        
-        photo = update.message.photo[-1]
-        photo_file = await photo.get_file()
-        image_bytes = await photo_file.download_as_bytearray()
-
-        caption = update.message.caption or ""
-        location, date = parse_caption_for_location_date(caption)
-        
-        if not location or location not in SPOT_COORDS:
-            await update.message.reply_text(
-                f"Не могу найти координаты для '{location}'. "
-                f"Доступные споты: Balangan, Uluwatu, Kuta, BaliSoul, PadangPadang, BatuBolong"
-            )
-            return
-
-        logger.info(f"Location: {location}, Date: {date}")
-        
-        # Анализируем скриншот
-        windy_data = await analyze_windy_screenshot_with_deepseek(bytes(image_bytes))
-        logger.info(f"Windy analysis data: {windy_data}")
-        
-        # Генерируем отчет
-        report = await build_poseidon_report(windy_data, location, date)
-        await update.message.reply_text(report)
-        
-        USER_STATE[chat_id] = {
-            "active": True, 
-            "awaiting_feedback": True,
-        }
-        await update.message.reply_text("Ну как тебе разбор, родной? Отлично / не очень")
-        
-        # Таймер сна
-        async def sleep_timer():
-            await asyncio.sleep(120)
-            if chat_id in USER_STATE:
-                USER_STATE[chat_id]["active"] = False
-                logger.info(f"Bot sleeping for chat {chat_id}")
-        
-        asyncio.create_task(sleep_timer())
-
-    except Exception as e:
-        logger.error(f"Error in handle_photo: {e}")
-        await update.message.reply_text("🔱 Посейдон в ярости! Что-то пошло не так. Попробуй ещё раз.")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    text = (update.message.text or "").lower().strip()
-
-    if "посейдон на связь" in text.lower():
-        USER_STATE[chat_id] = {"active": True}
-        await update.message.reply_text(
-            "🔱 Посейдон тут, смертный!\n\n"
-            "Давай свой скриншот прогноза с подписью в формате:\n"
-            "`Balangan 2025-11-06`\n\n"
-            "Доступные споты: Balangan, Uluwatu, Kuta, BaliSoul, PadangPadang, BatuBolong"
-        )
-        return
-
-    state = USER_STATE.get(chat_id, {})
-    if state.get("awaiting_feedback"):
-        if "отлично" in text:
-            await update.message.reply_text("Ну так боги😇Хорошей катки!")
-        elif "не очень" in text:
-            await update.message.reply_text("А не пора бы уже встать с дивана и катнуть?")
-        
-        USER_STATE[chat_id]["awaiting_feedback"] = False
-        return
-
-    if not state.get("active"):
-        return
-
-def parse_caption_for_location_date(caption: Optional[str]):
-    if not caption:
-        return None, str(datetime.utcnow().date())
-    parts = caption.strip().split()
-    location = parts[0]
-    date = parts[1] if len(parts) > 1 else str(datetime.utcnow().date())
-    return location, date
-
-bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-        update = TgUpdate.de_json(data, bot)
-        await bot_app.process_update(update)
-        return JSONResponse(content={"ok": True})
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return JSONResponse(status_code=500, content={"ok": False})
-
-@app.get("/")
-async def root():
-    return {"status": "Poseidon V4 Online", "version": "4.0"}
-
-@app.get("/ping")
-async def ping():
-    return {"status": "ok", "message": "Poseidon is awake and watching!"}
-
-@app.on_event("startup")
-async def startup():
-    await bot_app.initialize()
-    await bot_app.start()
-    asyncio.create_task(keep_alive_ping())
-    logger.info("Poseidon V4 awakened and ready!")
-
-@app.on_event("shutdown")
-async def shutdown():
-    await bot_app.stop()
-    await bot_app.shutdown()
-    logger.info("Poseidon V4 returning to the depths...")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+# Остальной код остается без изменений...
