@@ -1,6 +1,10 @@
-env
+
+## 🔒 **Обновленный .gitignore**
+```gitignore
+.env
 *.pyc
 __pycache__/
 *.log
 secrets/
 config.py
+.env.local
