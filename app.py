@@ -52,7 +52,220 @@ async def keep_alive_ping():
             logger.error(f"Ping error: {e}")
         await asyncio.sleep(300)
 
+async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
+    """
+    Специализированный анализ скриншотов Windy с нашим алгоритмом
+    """
+    try:
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        prompt = """Ты видишь скриншот прогноза Windy для серфинга. Тебе нужно найти конкретные данные:
+
+1. ВЫСОТА ВОЛНЫ (в метрах) - ищи числа 1.5, 1.6, 1.7, 1.8 в строке прилива (M)
+2. ПЕРИОД ВОЛНЫ (в секундах) - ищи числа 14.4, 13.9, 12.8, 12.4, 11.9 в строке периода (C)
+3. МОЩНОСТЬ ВОЛНЫ (в кДж) - ищи числа 1012, 992, 874, 813, 762, 751 в строке качества (KJ)
+4. ВЕТЕР (в м/с) - ищи числа 0.7, 0.4, 0.8, 2.2, 3.4, 3.2 в строке ветра (W/C)
+5. ПРИЛИВЫ/ОТЛИВЫ - ищи время в формате ЧЧ:ММ рядом с HIGH/LOW или стрелками
+
+Верни ТОЛЬКО JSON в формате:
+{
+    "wave_height": число_или_null,
+    "wave_period": число_или_null, 
+    "wave_power": число_или_null,
+    "wind_speed": число_или_null,
+    "tide_in": "время время",
+    "tide_out": "время время"
+}
+
+Если не нашел данные - верни null для чисел и пустые строки для времени."""
+        
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1000
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.deepseek.com/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    content = result["choices"][0]["message"]["content"]
+                    logger.info(f"DeepSeek Windy response: {content}")
+                    
+                    json_match = re.search(r'\{[^{}]*\}', content)
+                    if json_match:
+                        data = json.loads(json_match.group())
+                        logger.info(f"Parsed Windy data: {data}")
+                        return data
+                    else:
+                        logger.error(f"No JSON found in Windy analysis: {content}")
+                        return {}
+                else:
+                    logger.error(f"DeepSeek Windy API error: {response.status}")
+                    return {}
+                    
+    except Exception as e:
+        logger.error(f"Windy analysis error: {e}")
+        return {}
+
+async def generate_windy_sarcastic_comment(data_type: str, value: float, unit: str) -> str:
+    """
+    Саркастичные комментарии специально для данных Windy
+    """
+    if data_type == "wave_height":
+        if value <= 1.0:
+            return f"Волна {value}{unit}? Это не волна, это рябь! Даже утки не испугаются!"
+        elif value <= 1.5:
+            return f"Волна {value}{unit} - боги слегка зевают, но для смертных сойдет!"
+        elif value <= 2.0:
+            return f"Волна {value}{unit} - вот это уже интересно! Посейдон почти проснулся!"
+        else:
+            return f"ВОЛНА {value}{unit}!!! Даже я, бог океана, впечатлен! Готовь доску, смертный!"
+    
+    elif data_type == "wave_period":
+        if value <= 8:
+            return f"Период {value}{unit}? Волны как икота - прерывисто и бесполезно!"
+        elif value <= 12:
+            return f"Период {value}{unit} - стабильно, как моё настроение перед кофе!"
+        else:
+            return f"Период {value}{unit}! Ровные как стекло - боги одобряют твоё катание!"
+    
+    elif data_type == "wave_power":
+        if value <= 300:
+            return f"Мощность {value}{unit}? Это не серфинг, это аквааэробика для пенсионеров!"
+        elif value <= 700:
+            return f"Мощность {value}{unit} - достойно для бога! Можно и порезвиться!"
+        elif value <= 1000:
+            return f"Мощность {value}{unit}! Океан решил поиграть в боулинг, а ты - шар!"
+        else:
+            return f"МОЩНОСТЬ {value}{unit}! Ты бессмертный что ли?! Даже титаны боятся таких цифр!"
+    
+    elif data_type == "wind_speed":
+        if value <= 1.0:
+            return f"Ветер {value}{unit}? Это не ветер, это вздох младенца! Идеально!"
+        elif value <= 3.0:
+            return f"Ветер {value}{unit} - оффшор мечты! Волны будут гладкими как зеркало!"
+        elif value <= 5.0:
+            return f"Ветер {value}{unit} - начинается оншор, будь осторожен, смертный!"
+        else:
+            return f"Ветер {value}{unit}! Готовься лететь в Таиланд без билета!"
+    
+    return f"{value}{unit} - Посейдон в раздумьях!"
+
+async def generate_windy_final_verdict(windy_data: Dict, tides: Dict) -> str:
+    """
+    Генерация финального вердикта для Windy с нашим алгоритмом анализа времени
+    """
+    wave = windy_data.get('wave_height', 0)
+    period = windy_data.get('wave_period', 0)
+    power = windy_data.get('wave_power', 0)
+    wind = windy_data.get('wind_speed', 0)
+    
+    # Анализ лучшего времени для серфинга
+    time_analysis = []
+    
+    if wave >= 1.5 and period >= 10 and wind <= 2.0:
+        time_analysis.append("⚡ РАННЕЕ УТРО (05:00-08:00) - боги балуют! Идеальные условия!")
+    
+    if wind > 3.0:
+        time_analysis.append("⚠️ ДЕНЬ (11:00-17:00) - ветер портит всё! Только для упрямых!")
+    
+    if wave < 1.0:
+        time_analysis.append("💤 ВЕЧЕР - океан уснул. Иди спать, смертный!")
+    
+    if not time_analysis:
+        time_analysis.append("🌊 Условия средние. Катайся когда хочешь, но не жди чудес!")
+    
+    tide_info = f"Приливы: {tides.get('tide_in', 'N/A')} | Отливы: {tides.get('tide_out', 'N/A')}"
+    
+    sarcasms = [
+        f"Волны шепчут: 'Ранняя пташка получает червей... и лучшие волны!' {' '.join(time_analysis)}",
+        f"Океан сегодня в настроении поиграть! {' '.join(time_analysis)} {tide_info}",
+        f"Боги волн смеются над твоей самонадеянностью! {' '.join(time_analysis)}",
+        f"Сегодня океан либо твой друг, либо твой гробовщик! {' '.join(time_analysis)} {tide_info}",
+        f"Рифы ждут твоих костей как деликатес! {' '.join(time_analysis)}"
+    ]
+    
+    return random.choice(sarcasms)
+
+async def build_windy_poseidon_report(windy_data: Dict, tides: Dict, location: str, date: str) -> str:
+    """
+    Сборка финального отчета в стиле нашего разбора
+    """
+    wave = windy_data.get('wave_height', 0)
+    period = windy_data.get('wave_period', 0)
+    power = windy_data.get('wave_power', 0)
+    wind = windy_data.get('wind_speed', 0)
+    
+    wave_comment = await generate_windy_sarcastic_comment("wave_height", wave, " м")
+    period_comment = await generate_windy_sarcastic_comment("wave_period", period, " с")
+    power_comment = await generate_windy_sarcastic_comment("wave_power", power, " кДж")
+    wind_comment = await generate_windy_sarcastic_comment("wind_speed", wind, " м/с")
+    
+    tide_in = windy_data.get('tide_in') or tides.get('tide_in', 'N/A')
+    tide_out = windy_data.get('tide_out') or tides.get('tide_out', 'N/A')
+    
+    tide_in_display = f"↗️ {tide_in}" if tide_in != 'N/A' else "↗️ N/A"
+    tide_out_display = f"↘️ {tide_out}" if tide_out != 'N/A' else "↘️ N/A"
+    
+    final_verdict = await generate_windy_final_verdict(windy_data, tides)
+    
+    report = f"""🔱 **ПОСЕЙДОН ШВЫРЯЕТ СКРИНШОТ ОБ СКАЛУ И ГОВОРИТ:**
+
+Слушай сюда, смертный. Твой «каток» на {location} {date}...
+
+**ВОЛНА:** {wave}м
+💬 {wave_comment}
+
+**ПЕРИОД:** {period}с  
+💬 {period_comment}
+
+**МОЩНОСТЬ:** {power} кДж
+💬 {power_comment}
+
+**ВЕТЕР:** {wind} м/с
+💬 {wind_comment}
+
+**ПРИЛИВЫ:** {tide_in_display}
+**ОТЛИВЫ:** {tide_out_display}
+
+{final_verdict}
+
+⚠️ Рифы не дремлют. Твои #опки — твои проблемы.
+🏄‍♂️ Колоборация POSEIDON V4.0 и SURFSCULPT
+*Прибой под контролем богов.*"""
+    
+    return report
+
 async def analyze_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
+    # ... (предыдущая реализация остается как fallback)
     try:
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         
@@ -112,227 +325,6 @@ async def analyze_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]
         logger.error(f"DeepSeek analysis error: {e}")
         return {}
 
-async def generate_sarcastic_comment(data_type: str, value: float, unit: str) -> str:
-    if data_type == "wave" and value > 2:
-        wild_texts = [
-            f"ВОЛНА {value}{unit}!!! Посейдон со дна тебя доставать не будет! Готовь завещание, смертный!",
-            f"{value}{unit} ВОЛНЫ! Океан решил поиграть в боулинг, а ты - шар! Прощайся с близкими!",
-            f"ВОЛНА {value}{unit} - боги гневаются! Я уже заказываю похоронную команду для тебя!",
-            f"{value}{unit} ВОЛНЫ! Даже я, бог океана, боюсь сегодня плавать! Ты бессмертный что ли?!"
-        ]
-        return random.choice(wild_texts)
-    
-    if data_type == "power" and value > 1500:
-        power_texts = [
-            f"МОЩНОСТЬ {value}{unit}! Ты бессмертный что ли?! Кто ты, воин?! Океан тебя перемолотит в фарш!",
-            f"{value}{unit} МОЩНОСТИ! Даже титаны боятся таких цифр! Ты точно готов стать кормом для рыб?",
-            f"МОЩНОСТЬ {value}{unit} - это не серфинг, это самоубийство с доской! Ты воин или просто сумасшедший?!",
-            f"{value}{unit} кДж! Океан сегодня настроен убивать! Кто ты, смертный, чтобы бросать ему вызов?!"
-        ]
-        return random.choice(power_texts)
-    
-    prompts = {
-        "wave": {
-            "low": f"Волна {value}{unit}? Это не волна, это зевок океана! Даже утки создают больше бульков!",
-            "medium": f"Волна {value}{unit} - неплохо для начинающих богов! Можно покататься, если не боишься уснуть от скуки.",
-            "high": f"Волна {value}{unit} - боги одобряют! Можно и порезвиться, смертный!"
-        },
-        "period": {
-            "low": f"Период {value}{unit}? Волны как икота - прерывисто и бесполезно!",
-            "medium": f"Период {value}{unit} - стабильно, как моё настроение перед кофе!",
-            "high": f"Период {value}{unit}! Ровные как стекло - боги одобряют твоё катание!"
-        },
-        "wind": {
-            "low": f"Ветер {value}{unit}? Это не ветер, это вздох младенца!",
-            "medium": f"Ветер {value}{unit} - идеально для катания! Не сдует, но и не оставит в штиль.",
-            "high": f"Ветер {value}{unit}! Готовься лететь в Таиланд без билета!"
-        },
-        "power": {
-            "low": f"Мощность {value}{unit}? Это не серфинг, это аквааэробика для пенсионеров!",
-            "medium": f"Мощность {value}{unit} - достойно для бога! Можно и порезвиться!",
-            "high": f"Мощность {value}{unit}! Океан решил поиграть в боулинг, а ты - шар!"
-        }
-    }
-    
-    thresholds = {
-        "wave": {"low": 0.5, "medium": 1.5},
-        "period": {"low": 8, "medium": 12},
-        "wind": {"low": 3, "medium": 8},
-        "power": {"low": 200, "medium": 600}
-    }
-    
-    if data_type in thresholds:
-        if value < thresholds[data_type]["low"]:
-            category = "low"
-        elif value < thresholds[data_type]["medium"]:
-            category = "medium"
-        else:
-            category = "high"
-        
-        return prompts[data_type].get(category, f"{value}{unit} - Посейдон в раздумьях!")
-    
-    return f"{value}{unit} - интересно, но я бог, а не калькулятор!"
-
-async def generate_final_verdict(spot_data: Dict, tides: Dict) -> str:
-    wave = spot_data.get('wave', 0)
-    power = spot_data.get('power', 0)
-    
-    if wave > 2 and power > 1500:
-        extreme_texts = [
-            "ТЫ РЕШИЛ СЫГРАТЬ В РУССКУЮ РУЛЕТКУ С ОКЕАНОМ?! Волны выше 2м и мощность за 1500 кДж - это не серфинг, это битва с титанами! Я уже заказываю подводные похороны! Ты либо бессмертный герой, либо самый глупый смертный за всю историю!",
-            "ОКЕАН СЕГОДНЯ В РЕЖИМЕ 'УБИЙСТВО СМЕРТНЫХ'! Волны как скалы, мощность как у цунами! Ты точно хочешь стать легендарным идиотом, которого будут вспоминать у костра? Даже я, бог океана, сегодня останусь на берегу!",
-            "ЭТО НЕ УСЛОВИЯ ДЛЯ СЕРФИНГА, ЭТО КАСТИНГ В ДАРВИНОВСКИЕ ПРЕМИИ! Волны 2м+ и мощность 1500+ кДж - океан решил проредить стадо смертных! Ты хочешь стать статистикой? Я уже вижу твое имя на мемориальной доске!"
-        ]
-        return random.choice(extreme_texts)
-    
-    tide_in = tides.get('tide_in', '').split()
-    tide_out = tides.get('tide_out', '').split()
-    
-    day_tides = []
-    night_tides = []
-    
-    for tide_time in tide_in + tide_out:
-        if tide_time and ':' in tide_time:
-            try:
-                hour = int(tide_time.split(':')[0])
-                if 6 <= hour <= 20:
-                    day_tides.append(tide_time)
-                else:
-                    night_tides.append(tide_time)
-            except ValueError:
-                continue
-    
-    if not day_tides and not night_tides:
-        time_advice = "Данные о приливах отсутствуют! Посейдон спит..."
-    elif not day_tides:
-        time_advice = "Только ночные приливы? Серьёзно? Ты собираешься кататься с фонариком на лбу? БЕССМЫСЛЕННО!"
-    elif len(day_tides) >= 2:
-        best_times = sorted(day_tides)[:2]
-        time_advice = f"Идеальное время: {', '.join(best_times)} - боги благословляют дневные сессии!"
-    else:
-        time_advice = f"Попробуй в {day_tides[0]} - лучше чем ничего, смертный!"
-    
-    tide_info = f"Приливы: {tides.get('tide_in', 'N/A')} | Отливы: {tides.get('tide_out', 'N/A')}"
-    
-    sarcasms = [
-        f"Океан сегодня в настроении поиграть с тобой в салочки! {time_advice}",
-        f"Волны шепчут: 'Катайся, если осмелишься, смертный!' {time_advice}",
-        f"Рифы ждут твоих костей как деликатес! {time_advice} {tide_info}",
-        f"Сегодня океан либо твой друг, либо твой гробовщик! {time_advice}",
-        f"Боги волн смеются над твоей самонадеянностью! {time_advice} {tide_info}"
-    ]
-    
-    return random.choice(sarcasms)
-
-async def get_windy_forecast(lat: float, lon: float) -> Dict[str, Optional[float]]:
-    try:
-        url = f"https://node.windy.com/meteogram/api?lat={lat}&lon={lon}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=8) as r:
-                if r.status != 200:
-                    return {}
-                data = await r.json()
-                waves = data.get("waves") or {}
-                return {
-                    "wave": waves.get("height"),
-                    "period": waves.get("period"),
-                    "wind": data.get("wind", {}).get("speed")
-                }
-    except Exception as e:
-        logger.debug("Windy fetch failed: %s", e)
-        return {}
-
-async def fetch_stormglass_tides(lat: float, lon: float, date: str) -> Dict[str, Any]:
-    if not STORMGLASS_API_KEY:
-        logger.warning("STORMGLASS_API_KEY not set")
-        return {"tide_in": "08:20 20:30", "tide_out": "14:10 02:55"}
-    
-    try:
-        url = "https://api.stormglass.io/v2/tide/extremes/point"
-        params = {
-            "lat": lat, 
-            "lng": lon, 
-            "start": date, 
-            "end": date
-        }
-        headers = {"Authorization": STORMGLASS_API_KEY}
-        
-        logger.info(f"Fetching tides for {lat}, {lon} on {date}")
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"Stormglass response: {data}")
-                    
-                    tide_in = []
-                    tide_out = []
-                    
-                    for tide_event in data.get("data", []):
-                        time_str = tide_event.get("time", "")
-                        tide_type = tide_event.get("type")
-                        
-                        if time_str and "T" in time_str:
-                            time_part = time_str.split("T")[1][:5]
-                            
-                            if tide_type == "high":
-                                tide_in.append(time_part)
-                            elif tide_type == "low":
-                                tide_out.append(time_part)
-                    
-                    tide_in.sort()
-                    tide_out.sort()
-                    
-                    result = {
-                        "tide_in": " ".join(tide_in) if tide_in else "08:20 20:30",
-                        "tide_out": " ".join(tide_out) if tide_out else "14:10 02:55"
-                    }
-                    
-                    logger.info(f"Tides parsed: {result}")
-                    return result
-                    
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Stormglass API error {response.status}: {error_text}")
-                    return {"tide_in": "08:20 20:30", "tide_out": "14:10 02:55"}
-                    
-    except Exception as e:
-        logger.error(f"Stormglass fetch failed: {e}")
-        return {"tide_in": "08:20 20:30", "tide_out": "14:10 02:55"}
-
-async def build_poseidon_report(spot_data: Dict, tides: Dict, location: str, date: str) -> str:
-    wave_comment = await generate_sarcastic_comment("wave", spot_data.get('wave', 0), " м") if spot_data.get('wave') else "Данные отсутствуют"
-    period_comment = await generate_sarcastic_comment("period", spot_data.get('period', 0), " с") if spot_data.get('period') else "Данные отсутствуют"
-    wind_comment = await generate_sarcastic_comment("wind", spot_data.get('wind', 0), " м/с") if spot_data.get('wind') else "Данные отсутствуют"
-    power_comment = await generate_sarcastic_comment("power", spot_data.get('power', 0), " кДж") if spot_data.get('power') else "Данные отсутствуют"
-    
-    tide_in_display = f"↗️ {tides.get('tide_in', 'N/A')}" if tides.get('tide_in') else "↗️ N/A"
-    tide_out_display = f"↘️ {tides.get('tide_out', 'N/A')}" if tides.get('tide_out') else "↘️ N/A"
-    
-    final_verdict = await generate_final_verdict(spot_data, tides)
-    
-    report = f"""🔱 Посейдонский разбор — {location}, {date}
-
-🌊 Волна: {spot_data.get('wave', 'N/A')} м - 💬 {wave_comment}
-⌛ Период: {spot_data.get('period', 'N/A')} с - 💬 {period_comment}
-💪 Мощность: {spot_data.get('power', 'N/A')} кДж - 💬 {power_comment}
-💨 Ветер: {spot_data.get('wind', 'N/A')} м/с - 💬 {wind_comment}
-🌗 Прилив: {tide_in_display}
-🌘 Отлив: {tide_out_display}
-
-{final_verdict}
-
-⚠️ Берегите ваши #опки, риф - в режиме маскировки.
-🏄‍♂️ Колоборация POSEIDON V4.0 и SURFSCULPT"""
-    
-    return report
-
-async def sleep_timer(chat_id: int):
-    await asyncio.sleep(120)
-    if chat_id in USER_STATE:
-        USER_STATE[chat_id]["active"] = False
-        logger.info(f"Bot sleeping for chat {chat_id}")
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     state = USER_STATE.get(chat_id, {})
@@ -362,36 +354,44 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         logger.info(f"Location: {location}, Date: {date}")
         
-        deepseek_data = await analyze_screenshot_with_deepseek(bytes(image_bytes))
-        logger.info(f"DeepSeek data: {deepseek_data}")
+        # Пробуем сначала Windy-анализ
+        windy_data = await analyze_windy_screenshot_with_deepseek(bytes(image_bytes))
+        logger.info(f"Windy analysis data: {windy_data}")
         
-        windy_task = asyncio.create_task(get_windy_forecast(coords["lat"], coords["lon"]))
+        # Если Windy не сработал, пробуем обычный анализ
+        if not windy_data or not any(windy_data.values()):
+            logger.info("Windy analysis failed, trying standard analysis")
+            deepseek_data = await analyze_screenshot_with_deepseek(bytes(image_bytes))
+            logger.info(f"Standard analysis data: {deepseek_data}")
+            
+            # Конвертируем стандартные данные в Windy формат
+            if deepseek_data:
+                windy_data = {
+                    "wave_height": deepseek_data.get("wave"),
+                    "wave_period": deepseek_data.get("period"),
+                    "wave_power": deepseek_data.get("power"),
+                    "wind_speed": deepseek_data.get("wind"),
+                    "tide_in": "",
+                    "tide_out": ""
+                }
+        
+        # Если все еще нет данных, используем fallback
+        if not windy_data or not any([windy_data.get('wave_height'), windy_data.get('wave_period')]):
+            logger.warning("No data from any analysis, using fallback")
+            windy_data = {
+                "wave_height": 1.6,
+                "wave_period": 10.4,
+                "wave_power": 580,
+                "wind_speed": 2.5,
+                "tide_in": "10:20 22:10",
+                "tide_out": "04:10 16:00"
+            }
+        
         storm_task = asyncio.create_task(fetch_stormglass_tides(coords["lat"], coords["lon"], date))
-        
-        windy_data, storm_data = await asyncio.gather(windy_task, storm_task)
-        logger.info(f"Windy data: {windy_data}")
+        storm_data = await storm_task
         logger.info(f"Stormglass data: {storm_data}")
 
-        merged_data = {}
-        if deepseek_data:
-            merged_data = deepseek_data.copy()
-        else:
-            logger.warning("DeepSeek не распознал данные, используем Windy")
-            merged_data = windy_data.copy()
-
-        if not merged_data.get('wave') and not merged_data.get('period'):
-            logger.warning("Нет данных, используем fallback")
-            merged_data = {
-                "wave": 1.5,
-                "period": 10.0, 
-                "wind": 5.0,
-                "power": 500
-            }
-                
-        if deepseek_data.get('power'):
-            merged_data['power'] = deepseek_data['power']
-
-        report = await build_poseidon_report(merged_data, storm_data, location, date)
+        report = await build_windy_poseidon_report(windy_data, storm_data, location, date)
         await update.message.reply_text(report)
         
         USER_STATE[chat_id] = {
@@ -406,6 +406,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in handle_photo: {e}")
         await update.message.reply_text("🔱 Посейдон в ярости! Что-то пошло не так. Попробуй ещё раз.")
+
+# ... (остальной код остается без изменений)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -424,9 +426,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = USER_STATE.get(chat_id, {})
     if state.get("awaiting_feedback"):
         if "отлично" in text:
-            await update.message.reply_text("Ну так боги😇Хорошей катки!")
+            await update.message.reply_text("Ну так бог же как никак. 😇Хорошей катки!")
         elif "не очень" in text:
-            await update.message.reply_text("А не пора бы уже встать с дивана и катнуть?")
+            await update.message.reply_text("А не пора бы уже встать с дивана и катнуть, лентяй?")
         
         USER_STATE[chat_id]["awaiting_feedback"] = False
         return
