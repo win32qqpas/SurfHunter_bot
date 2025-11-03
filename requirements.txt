@@ -1,6 +1,6 @@
-fastapi==0.104.1
-uvicorn==0.24.0
-python-telegram-bot==20.7
-aiohttp==3.9.1
-pillow==10.1.0
-pytz==2023.3
+fastapi
+uvicorn
+python-telegram-bot
+aiohttp
+pillow
+pytz
