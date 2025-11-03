@@ -10,15 +10,20 @@
 - 😈 Саркастичные комментарии от DeepSeek
 - 🔱 Красивые отчеты в Telegram
 
-## 🛠 Setup
+## 🌐 Deploy on Render
 
-1. Клонируйте репозиторий
-2. Установите зависимости: `pip install -r requirements.txt`
-3. Настройте переменные окружения:
-   - `TELEGRAM_BOT_TOKEN`
-   - `STORMGLASS_API_KEY`
-4. Запустите: `uvicorn app:app --host 0.0.0.0 --port 10000`
+1. Нажми "New Web Service" в Render
+2. Подключи GitHub репозиторий
+3. Используй настройки:
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `uvicorn app:app --host 0.0.0.0 --port 10000`
 
+4. **В Environment Variables добавь:**
+   - `TELEGRAM_BOT_TOKEN` = твой токен от @BotFather
+   - `DEEPSEEK_API_KEY` = твой DeepSeek API ключ
+   - `STORMGLASS_API_KEY` = твой Stormglass API ключ
+
+5. Деплой! 🚀
 ## 📱 Usage
 
 1. Начните с команды: `Посейдон на связь`
