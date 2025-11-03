@@ -8,5 +8,7 @@ services:
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         value: your_telegram_bot_token
+      - key: DEEPSEEK_API_KEY
+        value: sk-7cd8dd4366b0414982b4947ed0bcd19b
       - key: STORMGLASS_API_KEY  
         value: your_stormglass_api_key
