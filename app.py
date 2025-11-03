@@ -1,3 +1,8 @@
+Понял! Делаем улучшенную версию с зависимостями и максимальным сарказмом! 🚀
+
+🔥 Новый код app.py с улучшенным сарказмом
+
+```python
 # Poseidon V4 — Surfsculpt x DeepSeek
 # FastAPI + Telegram + DeepSeek-Vision
 
@@ -6,7 +11,6 @@ import re
 import json
 import logging
 import asyncio
-from io import BytesIO
 from datetime import datetime
 from typing import Optional, Dict, Any
 from urllib.parse import unquote
@@ -25,12 +29,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poseidon_v4")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # Теперь из переменных окружения
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 STORMGLASS_API_KEY = os.getenv("STORMGLASS_API_KEY")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден")
-
 if not DEEPSEEK_API_KEY:
     raise ValueError("❌ DEEPSEEK_API_KEY не найден")
 
@@ -58,7 +61,8 @@ SPOT_COORDS = {
 async def analyze_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
     """Анализирует скриншот через DeepSeek Vision и извлекает данные о волнах"""
     try:
-        base64_image = await encode_image_to_base64(image_bytes)
+        import base64
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
         
         headers = {
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -73,7 +77,7 @@ async def analyze_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]
                     "content": [
                         {
                             "type": "text",
-                            "text": "Проанализируй этот скриншот прогноза серфинга и извлеки точные числовые данные. Верни ТОЛЬКО JSON в формате: {\"wave\": число_в_метрах_или_null, \"period\": число_в_секундах_или_null, \"wind\": число_мс_или_null, \"power\": число_кДж_или_null}. Если данных нет - пиши null. Не добавляй никакого текста кроме JSON."
+                            "text": "Анализируй этот скриншот прогноза серфинга. Найди и верни ТОЛЬКО JSON с числовыми значениями: wave (высота волны в метрах), period (период в секундах), wind (скорость ветра в м/с), power (мощность в кДж). Если данных нет - используй null. Формат: {\"wave\": число, \"period\": число, \"wind\": число, \"power\": число}"
                         },
                         {
                             "type": "image_url",
@@ -84,7 +88,8 @@ async def analyze_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]
                     ]
                 }
             ],
-            "temperature": 0.1
+            "temperature": 0.1,
+            "max_tokens": 500
         }
         
         async with aiohttp.ClientSession() as session:
@@ -92,14 +97,13 @@ async def analyze_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]
                 "https://api.deepseek.com/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=60
             ) as response:
                 if response.status == 200:
                     result = await response.json()
                     content = result["choices"][0]["message"]["content"]
                     
-                    # Извлекаем JSON из ответа
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    json_match = re.search(r'\{[^{}]*\}', content)
                     if json_match:
                         return json.loads(json_match.group())
                     else:
@@ -113,22 +117,40 @@ async def analyze_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]
         logger.error(f"DeepSeek analysis error: {e}")
         return {}
 
-async def encode_image_to_base64(image_bytes: bytes) -> str:
-    """Конвертирует изображение в base64"""
-    import base64
-    return base64.b64encode(image_bytes).decode('utf-8')
-
 # ----------------------------------------------------------
-# DEEPSEEK TEXT GENERATION
+# SARCASTIC TEXT GENERATION WITH DEPENDENCIES
 # ----------------------------------------------------------
 async def generate_sarcastic_comment(data_type: str, value: float, unit: str) -> str:
-    """Генерирует саркастичный комментарий для каждого параметра"""
+    """Генерирует саркастичный комментарий с зависимостями от значений"""
     
+    # ДИКИЙ ТЕКСТ ДЛЯ ВОЛНЫ ВЫШЕ 2м
+    if data_type == "wave" and value > 2:
+        wild_texts = [
+            f"ВОЛНА {value}{unit}!!! Посейдон со дна тебя доставать не будет! Готовь завещание, смертный!",
+            f"{value}{unit} ВОЛНЫ! Океан решил поиграть в боулинг, а ты - шар! Прощайся с близкими!",
+            f"ВОЛНА {value}{unit} - боги гневаются! Я уже заказываю похоронную команду для тебя!",
+            f"{value}{unit} ВОЛНЫ! Даже я, бог океана, боюсь сегодня плавать! Ты бессмертный что ли?!"
+        ]
+        import random
+        return random.choice(wild_texts)
+    
+    # МАКСИМУМ ИЗДЕВКИ ДЛЯ МОЩНОСТИ ВЫШЕ 1500 кДж
+    if data_type == "power" and value > 1500:
+        power_texts = [
+            f"МОЩНОСТЬ {value}{unit}! Ты бессмертный что ли?! Кто ты, воин?! Океан тебя перемолотит в фарш!",
+            f"{value}{unit} МОЩНОСТИ! Даже титаны боятся таких цифр! Ты точно готов стать кормом для рыб?",
+            f"МОЩНОСТЬ {value}{unit} - это не серфинг, это самоубийство с доской! Ты воин или просто сумасшедший?!",
+            f"{value}{unit} кДж! Океан сегодня настроен убивать! Кто ты, смертный, чтобы бросать ему вызов?!"
+        ]
+        import random
+        return random.choice(power_texts)
+    
+    # Обычные комментарии для нормальных значений
     prompts = {
         "wave": {
             "low": f"Волна {value}{unit}? Это не волна, это зевок океана! Даже утки создают больше бульков!",
             "medium": f"Волна {value}{unit} - неплохо для начинающих богов! Можно покататься, если не боишься уснуть от скуки.",
-            "high": f"ВОЛНА {value}{unit}! Боги гневаются! Готовь доску и завещание, смертный!"
+            "high": f"Волна {value}{unit} - боги одобряют! Можно и порезвиться, смертный!"
         },
         "period": {
             "low": f"Период {value}{unit}? Волны как икота - прерывисто и бесполезно!",
@@ -138,12 +160,12 @@ async def generate_sarcastic_comment(data_type: str, value: float, unit: str) ->
         "wind": {
             "low": f"Ветер {value}{unit}? Это не ветер, это вздох младенца!",
             "medium": f"Ветер {value}{unit} - идеально для катания! Не сдует, но и не оставит в штиль.",
-            "high": f"ВЕТЕР {value}{unit}! Готовься лететь в Таиланд без билета!"
+            "high": f"Ветер {value}{unit}! Готовься лететь в Таиланд без билета!"
         },
         "power": {
             "low": f"Мощность {value}{unit}? Это не серфинг, это аквааэробика для пенсионеров!",
             "medium": f"Мощность {value}{unit} - достойно для бога! Можно и порезвиться!",
-            "high": f"МОЩНОСТЬ {value}{unit}! Океан решил поиграть в боулинг, а ты - шар!"
+            "high": f"Мощность {value}{unit}! Океан решил поиграть в боулинг, а ты - шар!"
         }
     }
     
@@ -171,10 +193,19 @@ async def generate_final_verdict(spot_data: Dict, tides: Dict) -> str:
     """Генерирует финальный вердикт с сарказмом"""
     
     wave = spot_data.get('wave', 0)
-    period = spot_data.get('period', 0)
-    wind = spot_data.get('wind', 0)
+    power = spot_data.get('power', 0)
     
-    # Анализ времени для катания
+    # ДИКИЙ ТЕКСТ ДЛЯ ЭКСТРЕМАЛЬНЫХ УСЛОВИЙ
+    if wave > 2 and power > 1500:
+        extreme_texts = [
+            "😈 Сарказм Посейдона: ТЫ РЕШИЛ СЫГРАТЬ В РУССКУЮ РУЛЕТКУ С ОКЕАНОМ?! Волны выше 2м и мощность за 1500 кДж - это не серфинг, это битва с титанами! Я уже заказываю подводные похороны! Ты либо бессмертный герой, либо самый глупый смертный за всю историю!",
+            "😈 Сарказм Посейдона: ОКЕАН СЕГОДНЯ В РЕЖИМЕ 'УБИЙСТВО СМЕРТНЫХ'! Волны как скалы, мощность как у цунами! Ты точно хочешь стать легендарным идиотом, которого будут вспоминать у костра? Даже я, бог океана, сегодня останусь на берегу!",
+            "😈 Сарказм Посейдона: ЭТО НЕ УСЛОВИЯ ДЛЯ СЕРФИНГА, ЭТО КАСТИНГ В ДАРВИНОВСКИЕ ПРЕМИИ! Волны 2м+ и мощность 1500+ кДж - океан решил проредить стадо смертных! Ты хочешь стать статистикой? Я уже вижу твое имя на мемориальной доске!"
+        ]
+        import random
+        return random.choice(extreme_texts)
+    
+    # Обычный сарказм для нормальных условий
     tide_in = tides.get('tide_in', '').split()
     tide_out = tides.get('tide_out', '').split()
     
@@ -192,30 +223,16 @@ async def generate_final_verdict(spot_data: Dict, tides: Dict) -> str:
     else:
         time_advice = f"Попробуй в {day_tides[0]} - лучше чем ничего, смертный!"
     
-    # Общая оценка условий
-    conditions = []
-    if wave >= 1.5:
-        conditions.append("волны достойные")
-    if period >= 10:
-        conditions.append("период стабильный") 
-    if wind <= 10:
-        conditions.append("ветер норм")
-    
-    if conditions:
-        assessment = f"Условия: {', '.join(conditions)}. {time_advice}"
-    else:
-        assessment = f"Условия так себе. {time_advice}"
-    
     sarcasms = [
-        "Океан сегодня в настроении поиграть с тобой в салочки!",
-        "Волны шепчут: 'Катайся, если осмелишься, смертный!'",
-        "Рифы ждут твоих костей как деликатес!",
-        "Сегодня океан либо твой друг, либо твой гробовщик!",
-        "Боги волн смеются над твоей самонадеянностью!",
-        "Приготовь свою лучшую доску и завещание!"
+        f"Океан сегодня в настроении поиграть с тобой в салочки! {time_advice}",
+        f"Волны шепчут: 'Катайся, если осмелишься, смертный!' {time_advice}",
+        f"Рифы ждут твоих костей как деликатес! {time_advice}",
+        f"Сегодня океан либо твой друг, либо твой гробовщик! {time_advice}",
+        f"Боги волн смеются над твоей самонадеянностью! {time_advice}"
     ]
     
-    return f"{assessment}\n\n😈Сарказм Посейдона: {random.choice(sarcasms)}"
+    import random
+    return random.choice(sarcasms)
 
 # ----------------------------------------------------------
 # EXTERNAL DATA
@@ -271,10 +288,10 @@ async def build_poseidon_report(spot_data: Dict, tides: Dict, location: str, dat
     """Строит полный отчет Посейдона"""
     
     # Генерируем комментарии для каждого параметра
-    wave_comment = await generate_sarcastic_comment("wave", spot_data.get('wave', 0), "м") if spot_data.get('wave') else "❌ Данные отсутствуют"
-    period_comment = await generate_sarcastic_comment("period", spot_data.get('period', 0), "с") if spot_data.get('period') else "❌ Данные отсутствуют"
-    wind_comment = await generate_sarcastic_comment("wind", spot_data.get('wind', 0), "м/с") if spot_data.get('wind') else "❌ Данные отсутствуют"
-    power_comment = await generate_sarcastic_comment("power", spot_data.get('power', 0), "кДж") if spot_data.get('power') else "❌ Данные отсутствуют"
+    wave_comment = await generate_sarcastic_comment("wave", spot_data.get('wave', 0), " м") if spot_data.get('wave') else "❌ Данные отсутствуют"
+    period_comment = await generate_sarcastic_comment("period", spot_data.get('period', 0), " с") if spot_data.get('period') else "❌ Данные отсутствуют"
+    wind_comment = await generate_sarcastic_comment("wind", spot_data.get('wind', 0), " м/с") if spot_data.get('wind') else "❌ Данные отсутствуют"
+    power_comment = await generate_sarcastic_comment("power", spot_data.get('power', 0), " кДж") if spot_data.get('power') else "❌ Данные отсутствуют"
     
     # Финальный вердикт
     final_verdict = await generate_final_verdict(spot_data, tides)
@@ -290,7 +307,7 @@ async def build_poseidon_report(spot_data: Dict, tides: Dict, location: str, dat
 
 {final_verdict}
 
-⚠️ Берегите ваши *опки, риф - в режиме маскировки.
+⚠️ Берегите ваши #опки, риф - в режиме маскировки.
 🏄‍♂️ Колоборация POSEIDON V4.0 и SURFSCULPT"""
     
     return report
@@ -303,31 +320,37 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = USER_STATE.get(chat_id, {})
     
     if not state.get("active"):
-        await update.message.reply_text("Чтобы вызвать Посейдона — напиши 'Посейдон на связь'.")
+        await update.message.reply_text("🔱Посейдон в ярости! Разыгрываешь меня???!!!!")
         return
 
     try:
-        await update.message.reply_text("🔱 Анализирую скриншот... Боги видят всё!")
+        await update.message.reply_text("Сейчас поднимем для тебя, родной, со дна рукописи, 📜надеюсь не отсырели!")
         
+        # Получаем фото
         photo = update.message.photo[-1]
         photo_file = await photo.get_file()
         image_bytes = await photo_file.download_as_bytearray()
 
-        # Анализ скриншота через DeepSeek Vision
-        deepseek_data = await analyze_screenshot_with_deepseek(bytes(image_bytes))
-        
+        # Парсим локацию и дату из caption
         caption = update.message.caption or ""
         location, date = parse_caption_for_location_date(caption)
         
         if not location or location not in SPOT_COORDS:
-            await update.message.reply_text(f"⚠️ Не могу найти координаты для '{location}'. Доступные: {', '.join(SPOT_COORDS.keys())}")
+            await update.message.reply_text(
+                f"⚠️ Не могу найти координаты для '{location}'. "
+                f"Доступные споты: Balangan, Uluwatu, Kuta, BaliSoul, PadangPadang, BatuBolong"
+            )
             return
             
         coords = SPOT_COORDS[location]
 
+        # Анализ скриншота через DeepSeek Vision
+        deepseek_data = await analyze_screenshot_with_deepseek(bytes(image_bytes))
+        
         # Получаем дополнительные данные
         windy_task = asyncio.create_task(get_windy_forecast(coords["lat"], coords["lon"]))
         storm_task = asyncio.create_task(fetch_stormglass_tides(coords["lat"], coords["lon"], date))
+        
         windy_data, storm_data = await asyncio.gather(windy_task, storm_task)
 
         # Объединяем данные (приоритет DeepSeek, потом Windy)
@@ -335,35 +358,65 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for key in ['wave', 'period', 'wind']:
             if not merged_data.get(key) and windy_data.get(key):
                 merged_data[key] = windy_data[key]
+                
+        if deepseek_data.get('power'):
+            merged_data['power'] = deepseek_data['power']
 
         # Строим отчет
         report = await build_poseidon_report(merged_data, storm_data, location, date)
         await update.message.reply_text(report)
         
-        # Сбрасываем состояние
-        USER_STATE[chat_id] = {"active": False}
+        # Задаем вопрос и устанавливаем таймер сна
+        USER_STATE[chat_id] = {
+            "active": True, 
+            "awaiting_feedback": True,
+            "sleep_time": asyncio.get_event_loop().time() + 120  # Сон через 2 минуты
+        }
+        await update.message.reply_text("Ну как тебе разбор, родной? Отлично / не очень")
+        
+        # Запускаем таймер сна
+        asyncio.create_task(sleep_timer(chat_id))
 
     except Exception as e:
         logger.error(f"Error in handle_photo: {e}")
         await update.message.reply_text("🔱 Посейдон в ярости! Что-то пошло не так. Попробуй ещё раз.")
 
+async def sleep_timer(chat_id: int):
+    """Таймер сна на 2 минуты"""
+    await asyncio.sleep(120)
+    if chat_id in USER_STATE:
+        USER_STATE[chat_id]["active"] = False
+        logger.info(f"😴 Бот уснул для чата {chat_id}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = (update.message.text or "").lower().strip()
 
-    if "посейдон на связь" in text:
+    # Реагируем только на точную фразу
+    if "посейдон на связь" in text.lower():
         USER_STATE[chat_id] = {"active": True}
-        await update.message.reply_text("""🔱 Посейдон слушает! 
-
-Пришли скриншот прогноза с подписью в формате:
-`Спот Дата`
-
-Например: `Uluwatu 2024-12-15`
-
-Доступные споты: Balangan, Uluwatu, Kuta, BaliSoul, PadangPadang, BatuBolong""")
+        await update.message.reply_text(
+            "🔱 Посейдон тут, смертный!\n\n"
+            "Давай свой скриншот прогноза с подписью в формате:\n"
+            "`Uluwatu 2025-12-15`\n\n"
+            "Доступные споты: Balangan, Uluwatu, Kuta, BaliSoul, PadangPadang, BatuBolong"
+        )
         return
 
-    await update.message.reply_text("Напиши 'Посейдон на связь', чтобы начать разбор 🌊")
+    # Обработка фидбека
+    state = USER_STATE.get(chat_id, {})
+    if state.get("awaiting_feedback"):
+        if "отлично" in text:
+            await update.message.reply_text("Ну так боги😇Хорошей катки!")
+        elif "не очень" in text:
+            await update.message.reply_text("А не пора бы уже встать с дивана и катнуть?")
+        
+        USER_STATE[chat_id]["awaiting_feedback"] = False
+        return
+
+    # Игнорируем все остальные сообщения
+    if not state.get("active"):
+        return
 
 def parse_caption_for_location_date(caption: Optional[str]):
     if not caption:
@@ -419,3 +472,6 @@ async def shutdown():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+```
+
+Продолжение в следующем сообщении с requirements.txt и остальными файлами...
