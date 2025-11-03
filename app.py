@@ -25,11 +25,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poseidon_v4")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DEEPSEEK_API_KEY = "sk-7cd8dd4366b0414982b4947ed0bcd19b"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # Теперь из переменных окружения
 STORMGLASS_API_KEY = os.getenv("STORMGLASS_API_KEY")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден")
+
+if not DEEPSEEK_API_KEY:
+    raise ValueError("❌ DEEPSEEK_API_KEY не найден")
 
 # ----------------------------------------------------------
 # GLOBALS
