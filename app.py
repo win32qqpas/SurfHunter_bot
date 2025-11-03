@@ -333,7 +333,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        await update.message.reply_text("Сейчас поднимем для тебя, родной, со дна рукописи, 📜надеюсь не отсырели!")
+        await update.message.reply_text("Сейчас ,родной ,поднимем со дна рукописи, 📜надеюсь не отсырели!")
         
         photo = update.message.photo[-1]
         photo_file = await photo.get_file()
@@ -464,6 +464,3 @@ async def shutdown():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
-```
-
-Продолжение с остальными файлами в следующем сообщении...
