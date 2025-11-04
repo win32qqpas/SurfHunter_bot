@@ -90,7 +90,7 @@ def generate_dynamic_fallback_data():
     }
 
 async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
-    """Безопасный анализ через DeepSeek с обработкой ошибок"""
+    """Точный анализ скриншота Windy через DeepSeek с улучшенным промптом"""
     if not DEEPSEEK_API_KEY:
         logger.info("No DeepSeek API key, using dynamic data")
         return generate_dynamic_fallback_data()
@@ -103,19 +103,28 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
             "Content-Type": "application/json"
         }
         
-        prompt = """ТОЧНЫЙ АНАЛИЗ СКРИНШОТА WINDY! ВНИМАТЕЛЬНО ЧИТАЙ ВСЕ ДАННЫЕ!
+        # 🔥 УЛУЧШЕННЫЙ АНГЛИЙСКИЙ ПРОМПТ ДЛЯ ТОЧНОГО ИЗВЛЕЧЕНИЯ ДАННЫХ
+        prompt = """
+You are a precise data extraction tool. Analyze the provided Windy.com screenshot and extract ONLY the numerical data for surf forecasting.
 
-СТРУКТУРА ДАННЫХ:
-- Часы: 23, 02, 05, 08, 11, 14, 17, 20, 23, 02
-- Высота волны (M): числа как 1.3, 1.5, 0.8, 2.1 (МЕТРЫ)
-- Период волны (C): числа как 10.2, 14.6, 8.9 (СЕКУНДЫ)  
-- Мощность (kJ): числа как 736, 205, 1000 (кДж)
-- Ветер (w/c): числа как 0.6, 2.3, 4.8 (м/с)
+**CRITICAL INSTRUCTIONS:**
+- Extract data for the NEXT 24 HOURS from the current time shown.
+- Time slots are usually: 23, 02, 05, 08, 11, 14, 17, 20, 23, 02 (next day)
+- Ignore any "3h" summary data, focus on hourly breakdown.
 
-ПРИЛИВЫ/ОТЛИВЫ: ищи в блоке M_LAT, LAT или формата ЧЧ:ММ Х.Х м
-Пример: 04:10 0.1 м (ОТЛИВ), 10:20 2.5 м (ПРИЛИВ), 16:00 0.7 м (ОТЛИВ), 22:10 3.2 м (ПРИЛИВ)
+**DATA POINTS TO EXTRACT:**
+1. WAVE HEIGHT (M): Look for numbers like 1.3, 1.5, 0.8, 2.1 (in meters)
+2. WAVE PERIOD (C): Look for numbers like 10.2, 14.6, 8.9 (in seconds)  
+3. SWELL POWER (KJ): Look for numbers like 736, 205, 1000 (in kJ)
+4. WIND SPEED (м/с): Look for numbers like 0.6, 2.3, 4.8 (in m/s)
 
-ВОЗВРАЩАЙ JSON:
+**TIDE DATA:**
+- Look for tide information in sections like "M_LAT", "LAT", or format "HH:MM X.X m"
+- Example: "04:10 0.1 m" (LOW tide), "10:20 2.5 m" (HIGH tide)
+- Extract exactly 2 high tides and 2 low tides if available.
+- High tide: height > 1.5m, Low tide: height < 1.0m
+
+**OUTPUT FORMAT:** Return ONLY valid JSON:
 {
     "success": true,
     "wave_data": [1.3, 1.3, 1.4, 1.4, 1.4, 1.4, 1.4, 1.4, 1.5, 1.5],
@@ -125,12 +134,16 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
     "tides": {
         "high_times": ["10:20", "22:10"],
         "high_heights": [2.5, 3.2],
-        "low_times": ["04:10", "16:00"],
+        "low_times": ["04:10", "16:00"], 
         "low_heights": [0.1, 0.7]
     }
 }
 
-ВАЖНО: Всегда 2 прилива и 2 отлива! Высота >1.5м = прилив, <1.0м = отлив."""
+**VALIDATION:**
+- All arrays must have exactly 10 values (for 24 hours)
+- Power values should be realistic (100-2000 kJ), not 4-13
+- Return fallback if data looks invalid
+"""
 
         payload = {
             "model": "deepseek-chat",
@@ -143,7 +156,7 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
                             "text": prompt
                         },
                         {
-                            "type": "image_url",
+                            "type": "image_url", 
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{base64_image}"
                             }
@@ -151,7 +164,7 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
                     ]
                 }
             ],
-            "temperature": 0.1,
+            "temperature": 0.1,  # Низкая температура для точности
             "max_tokens": 2000
         }
         
@@ -166,20 +179,28 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
                     result = await response.json()
                     content = result["choices"][0]["message"]["content"]
                     
+                    # Ищем JSON в ответе
                     json_match = re.search(r'\{.*\}', content, re.DOTALL)
                     if json_match:
                         data = json.loads(json_match.group())
-                        if data.get('success') and data.get('power_data'):
-                            # Проверяем что мощность реалистичная (не 4-13 кДж)
-                            if max(data['power_data']) > 100 and min(data['power_data']) > 50:
-                                logger.info("DeepSeek data looks good")
-                                return data
+                        # Проверяем валидность данных
+                        if (data.get('success') and 
+                            len(data.get('wave_data', [])) == 10 and
+                            len(data.get('period_data', [])) == 10 and
+                            max(data.get('power_data', [0])) > 100):  # Проверка на реалистичную мощность
+                            
+                            logger.info("✅ DeepSeek returned valid surf data")
+                            return data
                     
-                    logger.warning("DeepSeek returned invalid data, using fallback")
+                    logger.warning("❌ DeepSeek returned invalid data, using fallback")
                     return generate_dynamic_fallback_data()
                 else:
-                    logger.warning(f"DeepSeek API error {response.status}, using fallback")
+                    logger.warning(f"⚠️ DeepSeek API error {response.status}, using fallback")
                     return generate_dynamic_fallback_data()
+                    
+    except Exception as e:
+        logger.error(f"❌ DeepSeek analysis error: {e}, using fallback")
+        return generate_dynamic_fallback_data()
                     
     except Exception as e:
         logger.error(f"DeepSeek error: {e}, using fallback")
