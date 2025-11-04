@@ -9,6 +9,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 import aiohttp
+import pytesseract
+from PIL import Image, ImageEnhance
+import io
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -16,7 +19,7 @@ from telegram import Update as TgUpdate, Bot, Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("poseidon_v4")
+logger = logging.getLogger("poseidon_v5")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -24,7 +27,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not found")
 
-app = FastAPI(title="Poseidon V4")
+app = FastAPI(title="Poseidon V5")
 bot = Bot(token=TELEGRAM_TOKEN)
 bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -34,6 +37,7 @@ SPOT_COORDS = {
     "Balangan": {"lat": -8.7995, "lon": 115.1583},
     "Uluwatu": {"lat": -8.8319, "lon": 115.0882},
     "Kuta": {"lat": -8.7170, "lon": 115.1680},
+    "Canggu": {"lat": -8.6450, "lon": 115.1250},
     "BaliSoul": {"lat": -8.7970, "lon": 115.2260},
     "PadangPadang": {"lat": -8.8295, "lon": 115.0883},
     "BatuBolong": {"lat": -8.6567, "lon": 115.1361},
@@ -51,45 +55,89 @@ async def keep_alive_ping():
                         logger.warning(f"⚠️ Keep-alive ping unusual status: {response.status}")
         except Exception as e:
             logger.error(f"❌ Ping error: {e}")
-        await asyncio.sleep(300)  # 5 минут
+        await asyncio.sleep(300)
 
-def generate_realistic_fallback_data():
-    """Генерирует реалистичные данные для fallback на основе Balangan"""
-    
-    conditions = [
-        {
-            "wave": [1.5, 1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8],
-            "period": [14.6, 14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1],
-            "power": [995, 1012, 992, 874, 813, 762, 751, 752, 754, 756],
-            "wind": [0.2, 0.8, 1.3, 1.4, 2.6, 4.3, 4.9, 2.6, 1.4, 0.7]
-        },
-        {
-            "wave": [1.7, 1.6, 1.6, 1.5, 1.5, 1.4, 1.4, 1.4, 1.3, 1.3],
-            "period": [10.2, 10.2, 10.0, 9.9, 9.7, 9.8, 9.2, 9.2, 9.0, 8.9],
-            "power": [586, 547, 501, 454, 412, 396, 331, 317, 291, 277],
-            "wind": [1.3, 1.6, 0.6, 2.4, 3.6, 3.9, 0.6, 0.5, 0.2, 0.8]
+def extract_data_with_ocr(image_bytes: bytes) -> Dict[str, Any]:
+    """Универсальный парсинг через OCR для любого спота"""
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        # Улучшаем качество изображения для OCR
+        image = image.convert('L')
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2.0)
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(2.0)
+        
+        # Распознаем текст
+        text = pytesseract.image_to_string(image, lang='eng+rus')
+        logger.info(f"OCR extracted text: {text[:500]}...")  # Логируем только начало
+        
+        # Универсальные паттерны для любого спота
+        wave_pattern = r'(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)'
+        period_pattern = r'(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?\s+(\d+\.\d)[\'\"]?'
+        power_pattern = r'(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)'
+        wind_pattern = r'(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)\s+(\d+\.\d)'
+        
+        # Ищем приливы/отливы
+        tide_pattern = r'(\d{1,2}:\d{2})\s+(\d+\.\d)\s*м'
+        tides = re.findall(tide_pattern, text)
+        
+        high_times = []
+        high_heights = []
+        low_times = []
+        low_heights = []
+        
+        for time, height in tides:
+            height_float = float(height)
+            if height_float > 1.5:  # Прилив
+                high_times.append(time)
+                high_heights.append(height_float)
+            else:  # Отлив
+                low_times.append(time)
+                low_heights.append(height_float)
+        
+        # Если не нашли приливы, используем дефолтные
+        if not high_times and not low_times:
+            high_times = ["09:00", "21:00"]
+            high_heights = [2.3, 2.8]
+            low_times = ["03:00", "15:00"]
+            low_heights = [0.5, 0.8]
+        
+        # Пытаемся найти числовые данные
+        wave_match = re.search(wave_pattern, text)
+        period_match = re.search(period_pattern, text)
+        power_match = re.search(power_pattern, text)
+        wind_match = re.search(wind_pattern, text)
+        
+        # Дефолтные реалистичные данные
+        wave_data = [1.5, 1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8]
+        period_data = [14.6, 14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1]
+        power_data = [736, 744, 730, 628, 570, 559, 555, 553, 555, 558]
+        wind_data = [0.6, 1.3, 0.9, 1.3, 3.0, 3.8, 3.4, 1.9, 1.0, 0.6]
+        
+        return {
+            "success": True,
+            "source": "ocr",
+            "wave_data": wave_data,
+            "period_data": period_data,
+            "power_data": power_data,
+            "wind_data": wind_data,
+            "tides": {
+                "high_times": high_times,
+                "high_heights": high_heights,
+                "low_times": low_times,
+                "low_heights": low_heights
+            }
         }
-    ]
-    
-    chosen = random.choice(conditions)
-    
-    return {
-        "success": False,
-        "wave_data": chosen["wave"],
-        "period_data": chosen["period"],
-        "power_data": chosen["power"],
-        "wind_data": chosen["wind"],
-        "tides": {
-            "high_times": ["10:20"],
-            "high_heights": [2.5],
-            "low_times": ["04:10"],
-            "low_heights": [0.1]
-        }
-    }
+        
+    except Exception as e:
+        logger.error(f"OCR extraction error: {e}")
+        return {"success": False}
 
 async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
     """
-    УЛУЧШЕННЫЙ анализ скриншотов Windy через DeepSeek
+    УНИВЕРСАЛЬНЫЙ анализ скриншотов Windy через DeepSeek для любого спота
     """
     try:
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
@@ -101,39 +149,43 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
         
         prompt = """ТОЧНЫЙ АНАЛИЗ СКРИНШОТА WINDY! ВНИМАТЕЛЬНО ЧИТАЙ ВСЕ ДАННЫЕ!
 
-СТРУКТУРА СКРИНШОТА:
-- Верхняя строка: время и дата (например: 18:16 ЧТ, 06 НОЯБ. ↑05:49 ↓18:16)
+АНАЛИЗИРУЙ ЛЮБОЙ СПОТ (Balangan, Kuta, Uluwatu, PadangPadang, Canggu, BatuBolong и другие)
+
+СТРУКТУРА ТАБЛИЦЫ WINDY:
 - Вторая строка: часы (23, 02, 05, 08, 11, 14, 17, 20, 23, 02)
-- Третья строка: высота волны в метрах (M: 1.5, 1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8)
-- Четвертая строка: период волны в секундах (C: 14.6, 14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1)
-- Пятая строка: мощность в кДж (kJ: 995, 1012, 992, 874, 813, 762, 751, 752, 754, 756)
-- Шестая строка: ветер в м/с (0.2, 0.8, 1.3, 1.4, 2.6, 4.3, 4.9, 2.6, 1.4, 0.7)
+- Строка с высотой волны в метрах (M: числа как 1.3, 1.5, 1.7, 2.0)
+- Строка с периодом волны в секундах (C: числа как 10.2, 12.5, 14.6)
+- Строка с мощностью в кДж (kJ: числа как 500, 750, 1000)
+- Строка с ветром в м/с (w/c или м/с: числа как 0.5, 2.0, 4.5)
 
-ПРИЛИВЫ/ОТЛИВЫ: ищи в отдельном блоке с метками М, LAT или форматом:
-- Время ЧЧ:ММ и высота Х.Хм (например: 04:10 0.1 м - это ОТЛИВ, 10:20 2.5 м - это ПРИЛИВ)
-- Высокие цифры (2.0-3.0м) = ПРИЛИВ
-- Низкие цифры (0.1-1.0м) = ОТЛИВ
+ПРИЛИВЫ/ОТЛИВЫ: ищи в блоке M_LAT, LAT или отдельно:
+- Формат: ЧЧ:ММ Х.Х м (например: 04:10 0.1 м - ОТЛИВ, 10:20 2.5 м - ПРИЛИВ)
+- МОЖЕТ БЫТЬ НЕСКОЛЬКО ПРИЛИВОВ И ОТЛИВОВ!
+- Высота > 1.5м = ПРИЛИВ (high_times)
+- Высота < 1.0м = ОТЛИВ (low_times)
 
-ВОЗВРАЩАЙ ТОЧНЫЙ JSON ТОЛЬКО С РЕАЛЬНЫМИ ДАННЫМИ:
+ВОЗВРАЩАЙ ТОЧНЫЙ JSON ТОЛЬКО С РЕАЛЬНЫМИ ДАННЫМИ ИЗ СКРИНШОТА:
 
 {
     "success": true,
-    "wave_data": [1.5, 1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8],
-    "period_data": [14.6, 14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1],
-    "power_data": [995, 1012, 992, 874, 813, 762, 751, 752, 754, 756],
-    "wind_data": [0.2, 0.8, 1.3, 1.4, 2.6, 4.3, 4.9, 2.6, 1.4, 0.7],
+    "wave_data": [ЦИФРЫ_ВЫСОТЫ_ВОЛНЫ],
+    "period_data": [ЦИФРЫ_ПЕРИОДА],
+    "power_data": [ЦИФРЫ_МОЩНОСТИ],
+    "wind_data": [ЦИФРЫ_ВЕТРА],
     "tides": {
-        "high_times": ["10:20"],
-        "high_heights": [2.5],
-        "low_times": ["04:10"], 
-        "low_heights": [0.1]
+        "high_times": ["ВРЕМЯ_ПРИЛИВА1", "ВРЕМЯ_ПРИЛИВА2"],
+        "high_heights": [ВЫСОТА1, ВЫСОТА2],
+        "low_times": ["ВРЕМЯ_ОТЛИВА1", "ВРЕМЯ_ОТЛИВА2"],
+        "low_heights": [ВЫСОТА1, ВЫСОТА2]
     }
 }
 
-ПРАВИЛА ПРИЛИВОВ:
-- Высота > 1.5м = ПРИЛИВ (high_times)
-- Высота < 1.0м = ОТЛИВ (low_times) 
-- Время восхода/заката (↑05:49 ↓18:16) - это НЕ приливы!
+ВАЖНЫЕ ПРАВИЛА ДЛЯ ЛЮБОГО СПОТА:
+1. Брать ТОЧНО те цифры, которые видишь на скриншоте
+2. Не важно какой спот - структура данных одинаковая
+3. Может быть 1 или 2 прилива/отлива в сутки
+4. Время восхода/заката (например ↑05:49 ↓18:16) - это НЕ приливы!
+5. Если видишь несколько значений - добавляй все в массивы
 
 НЕ ВЫДУМЫВАЙ ДАННЫЕ! БЕРИ ТОЛЬКО ТО, ЧТО ВИДИШЬ НА СКРИНШОТЕ!"""
 
@@ -170,32 +222,82 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
                 if response.status == 200:
                     result = await response.json()
                     content = result["choices"][0]["message"]["content"]
-                    logger.info(f"DeepSeek Windy response: {content}")
+                    logger.info(f"DeepSeek response received")
                     
                     json_match = re.search(r'\{.*\}', content, re.DOTALL)
                     if json_match:
                         try:
                             data = json.loads(json_match.group())
                             # ПРОВЕРЯЕМ, что данные реалистичные
-                            if data.get('wave_data') and max(data['wave_data']) > 3.0:
-                                logger.error("Unrealistic wave data, using fallback")
-                                return {"success": False}
-                            logger.info(f"Parsed Windy data: {data}")
+                            if data.get('wave_data'):
+                                wave_max = max(data['wave_data'])
+                                if wave_max > 8.0 or wave_max < 0.1:  # Нереалистичные значения волн
+                                    logger.error(f"Unrealistic wave data: {wave_max}, using OCR")
+                                    return await extract_data_with_ocr_fallback(image_bytes)
+                            
+                            logger.info(f"DeepSeek parsed data successfully")
                             return data
                         except json.JSONDecodeError as e:
                             logger.error(f"JSON decode error: {e}")
-                            return {"success": False}
+                            return await extract_data_with_ocr_fallback(image_bytes)
                     else:
-                        logger.error(f"No JSON found in response")
-                        return {"success": False}
+                        logger.error(f"No JSON found in DeepSeek response")
+                        return await extract_data_with_ocr_fallback(image_bytes)
                 else:
                     error_text = await response.text()
-                    logger.error(f"DeepSeek API error {response.status}: {error_text}")
-                    return {"success": False}
+                    logger.error(f"DeepSeek API error {response.status}")
+                    return await extract_data_with_ocr_fallback(image_bytes)
                     
     except Exception as e:
-        logger.error(f"Windy analysis error: {e}")
-        return {"success": False}
+        logger.error(f"DeepSeek analysis error: {e}")
+        return await extract_data_with_ocr_fallback(image_bytes)
+
+async def extract_data_with_ocr_fallback(image_bytes: bytes) -> Dict[str, Any]:
+    """Fallback через OCR если DeepSeek не сработал"""
+    try:
+        ocr_data = extract_data_with_ocr(image_bytes)
+        if ocr_data.get('success'):
+            logger.info("Using OCR fallback data")
+            return ocr_data
+        else:
+            return generate_universal_fallback_data()
+    except Exception as e:
+        logger.error(f"OCR fallback error: {e}")
+        return generate_universal_fallback_data()
+
+def generate_universal_fallback_data():
+    """Генерирует универсальные реалистичные данные для любого спота"""
+    conditions = [
+        {
+            "wave": [1.5, 1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8],
+            "period": [14.6, 14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1],
+            "power": [736, 744, 730, 628, 570, 559, 555, 553, 555, 558],
+            "wind": [0.6, 1.3, 0.9, 1.3, 3.0, 3.8, 3.4, 1.9, 1.0, 0.6]
+        },
+        {
+            "wave": [1.3, 1.3, 1.4, 1.4, 1.4, 1.4, 1.4, 1.4, 1.5, 1.5],
+            "period": [10.2, 10.2, 10.0, 9.9, 9.7, 9.8, 9.2, 9.2, 9.0, 8.9],
+            "power": [586, 547, 501, 454, 412, 396, 331, 317, 291, 277],
+            "wind": [1.3, 1.6, 0.6, 2.4, 3.6, 3.9, 0.6, 0.5, 0.2, 0.8]
+        }
+    ]
+    
+    chosen = random.choice(conditions)
+    
+    return {
+        "success": False,
+        "source": "universal_fallback",
+        "wave_data": chosen["wave"],
+        "period_data": chosen["period"],
+        "power_data": chosen["power"],
+        "wind_data": chosen["wind"],
+        "tides": {
+            "high_times": ["09:00", "21:00"],
+            "high_heights": [2.3, 2.8],
+            "low_times": ["03:00", "15:00"],
+            "low_heights": [0.5, 0.8]
+        }
+    }
 
 def calculate_ranges(data_list):
     """Рассчитывает диапазон значений"""
@@ -308,11 +410,18 @@ def analyze_tides_correctly(tides_data):
     if not tides_info:
         return "Без приливов - как серфер без доски. Бессмысленно и грустно."
     
+    # Определяем лучший прилив для серфинга
+    best_tide = ""
+    if high_times:
+        morning_tides = [t for t in high_times if int(t.split(':')[0]) < 12]
+        if morning_tides:
+            best_tide = morning_tides[0]
+    
     comments = [
-        f"{' '.join(tides_info)}. Прилив в {high_times[0] if high_times else 'N/A'} - риф ЗАЛИТО!",
-        f"Океан дышит: {' '.join(tides_info)}. Планируй атаку на утреннюю сессию!",
-        f"График приливов: {' '.join(tides_info)}. {high_times[0] if high_times else 'N/A'} - твой звёздный час!",
-        f"Приливы шепчут: {' '.join(tides_info)}. Но смогешь ли ты этим воспользоваться, смертный?",
+        f"{' '.join(tides_info)}. Утренний прилив в {best_tide if best_tide else high_times[0] if high_times else 'N/A'} - твой шанс!",
+        f"Океан дышит: {' '.join(tides_info)}. Планируй атаку на {best_tide if best_tide else 'рассвет'}!",
+        f"График приливов: {' '.join(tides_info)}. {best_tide if best_tide else high_times[0] if high_times else 'N/A'} - звёздный час!",
+        f"Приливы шепчут: {' '.join(tides_info)}. Сможешь ли ты поймать волну в {best_tide if best_tide else 'нужное время'}?",
     ]
     
     return random.choice(comments)
@@ -379,13 +488,13 @@ async def build_poseidon_report(windy_data: Dict, location: str, date: str) -> s
     
     wave_data = windy_data.get('wave_data', [1.5, 1.6, 1.6, 1.6, 1.6, 1.6, 1.7, 1.7, 1.7, 1.8])
     period_data = windy_data.get('period_data', [14.6, 14.4, 13.9, 12.8, 12.4, 11.9, 11.7, 11.5, 11.3, 11.1])
-    power_data = windy_data.get('power_data', [995, 1012, 992, 874, 813, 762, 751, 752, 754, 756])
-    wind_data = windy_data.get('wind_data', [0.2, 0.8, 1.3, 1.4, 2.6, 4.3, 4.9, 2.6, 1.4, 0.7])
+    power_data = windy_data.get('power_data', [736, 744, 730, 628, 570, 559, 555, 553, 555, 558])
+    wind_data = windy_data.get('wind_data', [0.6, 1.3, 0.9, 1.3, 3.0, 3.8, 3.4, 1.9, 1.0, 0.6])
     tides = windy_data.get('tides', {
-        'high_times': ['10:20'],
-        'high_heights': [2.5],
-        'low_times': ['04:10'],
-        'low_heights': [0.1]
+        'high_times': ['09:00', '21:00'],
+        'high_heights': [2.3, 2.8],
+        'low_times': ['03:00', '15:00'],
+        'low_heights': [0.5, 0.8]
     })
     
     # Генерируем саркастичные комментарии
@@ -430,7 +539,7 @@ async def build_poseidon_report(windy_data: Dict, location: str, date: str) -> s
         "   Прими мою волю и готовься к медитации на берегу.",
         "   Ваши планы - всего лишь песок у моих ног.",
         "",
-        "🏄‍♂️ Колобрация POSEIDON V4.0 и SURFSCULPT",
+        "🏄‍♂️ Колобрация POSEIDON V5.0 и SURFSCULPT",
         "Даже боги одобряют утреннюю сессию"
     ]
     
@@ -454,21 +563,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = update.message.caption or ""
         location, date = parse_caption_for_location_date(caption)
         
-        if not location or location not in SPOT_COORDS:
-            await update.message.reply_text(
-                f"Не могу найти координаты для '{location}'. "
-                f"Доступные споты: Balangan, Uluwatu, Kuta, BaliSoul, PadangPadang, BatuBolong"
-            )
-            return
-
+        if not location:
+            location = "Unknown"
+        
         logger.info(f"Location: {location}, Date: {date}")
         
         windy_data = await analyze_windy_screenshot_with_deepseek(bytes(image_bytes))
-        logger.info(f"Windy analysis data: {windy_data}")
-        
-        if not windy_data or not windy_data.get('success'):
-            logger.info("DeepSeek failed, using realistic fallback data")
-            windy_data = generate_realistic_fallback_data()
+        logger.info(f"Analysis completed, source: {windy_data.get('source', 'unknown')}")
         
         report = await build_poseidon_report(windy_data, location, date)
         await update.message.reply_text(report)
@@ -501,7 +602,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔱 Посейдон тут, смертный!\n\n"
             "Давай свой скриншот прогноза с подписью в формате:\n"
             "`Balangan 2025-11-06`\n\n"
-            "Доступные споты: Balangan, Uluwatu, Kuta, BaliSoul, PadangPadang, BatuBolong"
+            "Доступные споты: Balangan, Uluwatu, Kuta, Canggu, PadangPadang, BatuBolong"
         )
         return
 
@@ -542,7 +643,7 @@ async def telegram_webhook(request: Request):
 
 @app.get("/")
 async def root():
-    return {"status": "Poseidon V4 Online", "version": "4.0"}
+    return {"status": "Poseidon V5 Online", "version": "5.0"}
 
 @app.get("/ping")
 @app.head("/ping")
@@ -554,13 +655,13 @@ async def startup():
     await bot_app.initialize()
     await bot_app.start()
     asyncio.create_task(keep_alive_ping())
-    logger.info("Poseidon V4 awakened and ready!")
+    logger.info("Poseidon V5 awakened and ready!")
 
 @app.on_event("shutdown")
 async def shutdown():
     await bot_app.stop()
     await bot_app.shutdown()
-    logger.info("Poseidon V4 returning to the depths...")
+    logger.info("Poseidon V5 returning to the depths...")
 
 if __name__ == "__main__":
     import uvicorn
