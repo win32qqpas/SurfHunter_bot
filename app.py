@@ -86,16 +86,22 @@ RETURN ONLY THIS JSON FORMAT:
 ONLY JSON, NO OTHER TEXT!"""
 
 async def keep_alive_ping():
-    """Пинг для поддержания активности"""
+    """Тихий пинг с минимальным логированием"""
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get("https://surfhunter-bot.onrender.com/") as response:
-                    if response.status == 200:
-                        logger.info(f"✅ Keep-alive ping successful")
-        except Exception as e:
-            logger.error(f"❌ Ping error: {e}")
-        await asyncio.sleep(300)
+                async with session.get(
+                    "https://surfhunter-bot.onrender.com/ping",
+                    timeout=10
+                ) as response:
+                    if response.status != 200:
+                        # Логируем только если несколько раз подряд ошибка
+                        pass
+        except Exception:
+            # Игнорируем ошибки - это нормально для free tier
+            pass
+        
+        await asyncio.sleep(300)  # 5 минут
 
 def enhance_image_for_ocr(image_bytes: bytes) -> bytes:
     """Улучшает качество изображения для OCR"""
