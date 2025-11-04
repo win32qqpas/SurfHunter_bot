@@ -40,14 +40,20 @@ SPOT_COORDS = {
 }
 
 async def keep_alive_ping():
+    """Пинг для поддержания активности на Render"""
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get("https://surfhunter-bot.onrender.com/ping") as response:
-                    logger.info(f"Keep-alive ping: {response.status}")
+                # Используем корневой URL вместо /ping
+                async with session.get("https://surfhunter-bot.onrender.com/") as response:
+                    if response.status == 200:
+                        logger.info(f"✅ Keep-alive ping successful: {response.status}")
+                    else:
+                        logger.warning(f"⚠️ Keep-alive ping unusual status: {response.status}")
         except Exception as e:
-            logger.error(f"Ping error: {e}")
-        await asyncio.sleep(300)
+            logger.error(f"❌ Ping error: {e}")
+        # Увеличиваем интервал до 10 минут (600 секунд) чтобы не превышать лимиты
+        await asyncio.sleep(600)
 
 def generate_realistic_fallback_data():
     """Генерирует реалистичные случайные данные для fallback"""
@@ -520,6 +526,7 @@ async def root():
     return {"status": "Poseidon V4 Online", "version": "4.0"}
 
 @app.get("/ping")
+@app.head("/ping")  # ✅ Добавляем поддержку HEAD запросов для UptimeRobot
 async def ping():
     return {"status": "ok", "message": "Poseidon is awake and watching!"}
 
