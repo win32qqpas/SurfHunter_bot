@@ -46,7 +46,6 @@ async def keep_alive_ping():
 
 def generate_dynamic_fallback_data():
     """Генерирует реалистичные случайные данные для любого спота"""
-    # Более реалистичные диапазоны
     conditions = [
         # Условия для Kuta (пляжный брейк)
         {
@@ -89,8 +88,29 @@ def generate_dynamic_fallback_data():
         }
     }
 
+def validate_surf_data(data: Dict) -> bool:
+    """Проверяет валидность данных о серфинге"""
+    if not data.get('success'):
+        return False
+        
+    required_arrays = ['wave_data', 'period_data', 'power_data', 'wind_data']
+    for array in required_arrays:
+        if len(data.get(array, [])) < 8:
+            logger.warning(f"❌ Array {array} has insufficient data: {len(data.get(array, []))}")
+            return False
+    
+    # Проверка реалистичных диапазонов
+    wave_ok = 0.1 < max(data['wave_data']) < 5.0
+    period_ok = 3.0 < max(data['period_data']) < 25.0
+    power_ok = max(data['power_data']) > 30
+    
+    if not all([wave_ok, period_ok, power_ok]):
+        logger.warning(f"❌ Data validation failed - wave_ok: {wave_ok}, period_ok: {period_ok}, power_ok: {power_ok}")
+    
+    return wave_ok and period_ok and power_ok
+
 async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
-    """Точный анализ скриншота Windy через DeepSeek с улучшенным промптом"""
+    """ТОЧНЫЙ анализ скриншота Windy через DeepSeek с ДЕТАЛИЗИРОВАННЫМ промптом"""
     if not DEEPSEEK_API_KEY:
         logger.info("No DeepSeek API key, using dynamic data")
         return generate_dynamic_fallback_data()
@@ -103,47 +123,57 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
             "Content-Type": "application/json"
         }
         
-        # 🔥 УЛУЧШЕННЫЙ АНГЛИЙСКИЙ ПРОМПТ ДЛЯ ТОЧНОГО ИЗВЛЕЧЕНИЯ ДАННЫХ
-        prompt = """
-You are a precise data extraction tool. Analyze the provided Windy.com screenshot and extract ONLY the numerical data for surf forecasting.
+        # 🔥 ДЕТАЛИЗИРОВАННЫЙ ПРОМПТ ДЛЯ ТОЧНОГО ИЗВЛЕЧЕНИЯ ДАННЫХ
+        prompt = """CRITICAL: Extract EXACT numerical data from Windy.com surf forecast screenshot. FOLLOW THESE STEPS:
 
-**CRITICAL INSTRUCTIONS:**
-- Extract data for the NEXT 24 HOURS from the current time shown.
-- Time slots are usually: 23, 02, 05, 08, 11, 14, 17, 20, 23, 02 (next day)
-- Ignore any "3h" summary data, focus on hourly breakdown.
+STEP 1: IDENTIFY ACTIVE DAY
+- Look for "ЗАВТРА", "TODAY", "СЕГОДНЯ" or date headers like "ЧТ 06", "ПТ 07"
+- Extract data ONLY for the active/selected day
+- Ignore weekly overview tables (Бр, Ср, Чт, Пт, Сб, Вс, Пн, Вт)
 
-**DATA POINTS TO EXTRACT:**
-1. WAVE HEIGHT (M): Look for numbers like 1.3, 1.5, 0.8, 2.1 (in meters)
-2. WAVE PERIOD (C): Look for numbers like 10.2, 14.6, 8.9 (in seconds)  
-3. SWELL POWER (KJ): Look for numbers like 736, 205, 1000 (in kJ)
-4. WIND SPEED (м/с): Look for numbers like 0.6, 2.3, 4.8 (in m/s)
+STEP 2: EXTRACT HOURLY DATA FOR 24H
+Find the main data table with hourly columns. Time slots are typically: 02, 05, 08, 11, 14, 17, 20, 23, 02, 05
 
-**TIDE DATA:**
-- Look for tide information in sections like "M_LAT", "LAT", or format "HH:MM X.X m"
-- Example: "04:10 0.1 m" (LOW tide), "10:20 2.5 m" (HIGH tide)
-- Extract exactly 2 high tides and 2 low tides if available.
+LOOK FOR THESE EXACT ROW LABELS:
+- "M", "м" (Wave Height in METERS): numbers like 1.2, 1.1, 1.3, 1.4
+- "C", "с" (Wave Period in SECONDS): numbers like 8.9, 14.6, 13.7, 8.1  
+- "kJ", "кДж" (Swell Power in kJ): numbers like 217, 736, 744, 192
+- "w/c", "м/с" (Wind Speed in m/s): numbers like 0.8, 1.2, 0.3, 0.9
+
+STEP 3: EXTRACT TIDE DATA
+Look for tide information in these EXACT formats:
+- "HH:MM X.X M" or "HH:MM X.X м" (e.g., "09:45 2.4 M", "04:10 0.1 м")
+- Sections labeled "M_LAT", "LAT", "Приливы"
+- Extract ALL visible tide times and heights
 - High tide: height > 1.5m, Low tide: height < 1.0m
 
-**OUTPUT FORMAT:** Return ONLY valid JSON:
+STEP 4: VALIDATION RULES
+- All data arrays must have SAME LENGTH (usually 8-10 values)
+- Wave height: 0.3 - 3.0m (typical range)
+- Wave period: 5 - 20s (typical range)  
+- Swell power: 50 - 2000kJ (typical range)
+- Wind speed: 0 - 15m/s (typical range)
+
+STEP 5: OUTPUT FORMAT - RETURN ONLY THIS JSON:
 {
     "success": true,
-    "wave_data": [1.3, 1.3, 1.4, 1.4, 1.4, 1.4, 1.4, 1.4, 1.5, 1.5],
-    "period_data": [14.6, 14.3, 13.9, 12.7, 12.0, 11.9, 11.7, 11.5, 11.3, 11.1],
-    "power_data": [736, 744, 730, 628, 570, 559, 555, 553, 555, 558],
-    "wind_data": [0.6, 1.3, 0.9, 1.3, 3.0, 3.8, 3.4, 1.9, 1.0, 0.6],
+    "wave_data": [1.2, 1.1, 1.1, 1.2, 1.2, 1.2, 1.3, 1.3, 1.3, 1.4],
+    "period_data": [8.9, 8.8, 8.6, 8.4, 8.2, 8.1, 13.7, 14.6, 14.3, 13.9],
+    "power_data": [217, 205, 192, 194, 194, 200, 607, 736, 744, 730],
+    "wind_data": [0.8, 1.0, 0.8, 0.3, 0.7, 1.2, 1.0, 0.9, 0.2, 0.0],
     "tides": {
-        "high_times": ["10:20", "22:10"],
-        "high_heights": [2.5, 3.2],
-        "low_times": ["04:10", "16:00"], 
-        "low_heights": [0.1, 0.7]
+        "high_times": ["09:45"],
+        "high_heights": [2.4],
+        "low_times": [],
+        "low_heights": []
     }
 }
 
-**VALIDATION:**
-- All arrays must have exactly 10 values (for 24 hours)
-- Power values should be realistic (100-2000 kJ), not 4-13
-- Return fallback if data looks invalid
-"""
+IMPORTANT: 
+- Extract ONLY visible data from the active day
+- If data is missing for some hours, use 0.0 for wind, estimate others
+- DO NOT invent or generate data - use only what's visible
+- Return fallback data if extraction fails"""
 
         payload = {
             "model": "deepseek-chat",
@@ -156,7 +186,7 @@ You are a precise data extraction tool. Analyze the provided Windy.com screensho
                             "text": prompt
                         },
                         {
-                            "type": "image_url", 
+                            "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{base64_image}"
                             }
@@ -164,13 +194,13 @@ You are a precise data extraction tool. Analyze the provided Windy.com screensho
                     ]
                 }
             ],
-            "temperature": 0.1,  # Низкая температура для точности
+            "temperature": 0.1,  # Минимальная креативность
             "max_tokens": 2000
         }
         
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.deepseek.com/chat/completions",
+                "https://api.deepseek.com/chat/completions", 
                 headers=headers,
                 json=payload,
                 timeout=30
@@ -182,17 +212,22 @@ You are a precise data extraction tool. Analyze the provided Windy.com screensho
                     # Ищем JSON в ответе
                     json_match = re.search(r'\{.*\}', content, re.DOTALL)
                     if json_match:
-                        data = json.loads(json_match.group())
-                        # Проверяем валидность данных
-                        if (data.get('success') and 
-                            len(data.get('wave_data', [])) == 10 and
-                            len(data.get('period_data', [])) == 10 and
-                            max(data.get('power_data', [0])) > 100):  # Проверка на реалистичную мощность
+                        try:
+                            data = json.loads(json_match.group())
                             
-                            logger.info("✅ DeepSeek returned valid surf data")
-                            return data
+                            # УСИЛЕННАЯ ПРОВЕРКА ДАННЫХ
+                            if validate_surf_data(data):
+                                logger.info("✅ DeepSeek returned VALID surf data")
+                                logger.info(f"📊 Data ranges - Wave: {min(data['wave_data'])}-{max(data['wave_data'])}m, "
+                                          f"Period: {min(data['period_data'])}-{max(data['period_data'])}s, "
+                                          f"Power: {min(data['power_data'])}-{max(data['power_data'])}kJ")
+                                return data
+                            else:
+                                logger.warning("❌ DeepSeek data failed validation")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"❌ JSON decode error: {e}")
                     
-                    logger.warning("❌ DeepSeek returned invalid data, using fallback")
+                    logger.warning("❌ DeepSeek returned INVALID data, using fallback")
                     return generate_dynamic_fallback_data()
                 else:
                     logger.warning(f"⚠️ DeepSeek API error {response.status}, using fallback")
@@ -200,10 +235,6 @@ You are a precise data extraction tool. Analyze the provided Windy.com screensho
                     
     except Exception as e:
         logger.error(f"❌ DeepSeek analysis error: {e}, using fallback")
-        return generate_dynamic_fallback_data()
-                    
-    except Exception as e:
-        logger.error(f"DeepSeek error: {e}, using fallback")
         return generate_dynamic_fallback_data()
 
 def calculate_ranges(data_list):
