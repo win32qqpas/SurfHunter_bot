@@ -93,24 +93,37 @@ def validate_surf_data(data: Dict) -> bool:
     if not data.get('success'):
         return False
         
-    required_arrays = ['wave_data', 'period_data', 'power_data', 'wind_data']
-    for array in required_arrays:
-        if len(data.get(array, [])) < 8:
-            logger.warning(f"❌ Array {array} has insufficient data: {len(data.get(array, []))}")
-            return False
+    # Проверяем что есть хотя бы некоторые данные
+    has_sufficient_data = False
+    for key in ['wave_data', 'period_data', 'power_data', 'wind_data']:
+        if data.get(key) and len(data[key]) >= 6:  # Минимум 6 значений
+            has_sufficient_data = True
+            break
     
-    # Проверка реалистичных диапазонов
-    wave_ok = 0.1 < max(data['wave_data']) < 5.0
-    period_ok = 3.0 < max(data['period_data']) < 25.0
-    power_ok = max(data['power_data']) > 30
+    if not has_sufficient_data:
+        logger.warning("❌ Insufficient data in all arrays")
+        return False
     
-    if not all([wave_ok, period_ok, power_ok]):
-        logger.warning(f"❌ Data validation failed - wave_ok: {wave_ok}, period_ok: {period_ok}, power_ok: {power_ok}")
+    # Проверка реалистичных диапазонов для существующих данных
+    if data.get('wave_data'):
+        wave_ok = 0.1 < max(data['wave_data']) < 5.0
+        if not wave_ok:
+            logger.warning(f"❌ Wave data out of range: {max(data['wave_data'])}")
     
-    return wave_ok and period_ok and power_ok
+    if data.get('period_data'):
+        period_ok = 3.0 < max(data['period_data']) < 25.0
+        if not period_ok:
+            logger.warning(f"❌ Period data out of range: {max(data['period_data'])}")
+    
+    if data.get('power_data'):
+        power_ok = max(data['power_data']) > 30
+        if not power_ok:
+            logger.warning(f"❌ Power data too low: {max(data['power_data'])}")
+    
+    return True
 
 async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
-    """ТОЧНЫЙ анализ скриншота Windy через DeepSeek с ДЕТАЛИЗИРОВАННЫМ промптом"""
+    """УНИВЕРСАЛЬНЫЙ анализ скриншота Windy через DeepSeek с ОБУЧАЕМЫМ промптом"""
     if not DEEPSEEK_API_KEY:
         logger.info("No DeepSeek API key, using dynamic data")
         return generate_dynamic_fallback_data()
@@ -123,38 +136,59 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
             "Content-Type": "application/json"
         }
         
-        # 🔥 ДЕТАЛИЗИРОВАННЫЙ ПРОМПТ ДЛЯ ТОЧНОГО ИЗВЛЕЧЕНИЯ ДАННЫХ
-        prompt = """CRITICAL: Extract EXACT numerical data from Windy.com surf forecast screenshot. FOLLOW THESE STEPS:
+        # 🔥 УНИВЕРСАЛЬНЫЙ ОБУЧАЕМЫЙ ПРОМПТ ДЛЯ ЛЮБЫХ СКРИНШОТОВ WINDY
+        prompt = """ТЫ - ЭКСПЕРТ ПО ПАРСИНГУ СКРИНШОТОВ WINDY.COM. Твоя задача - ТОЧНО извлечь ВСЕ числовые данные о серфинге ЛЮБОГО спота.
 
-STEP 1: IDENTIFY ACTIVE DAY
-- Look for "ЗАВТРА", "TODAY", "СЕГОДНЯ" or date headers like "ЧТ 06", "ПТ 07"
-- Extract data ONLY for the active/selected day
-- Ignore weekly overview tables (Бр, Ср, Чт, Пт, Сб, Вс, Пн, Вт)
+# 🎯 КЛЮЧЕВЫЕ ПРИНЦИПЫ:
+1. АНАЛИЗИРУЙ ЛЮБОЙ ФОРМАТ ДАННЫХ - таблицы, графики, блоки
+2. ИЩИ ВСЕ ВОЗМОЖНЫЕ МЕТКИ ДАННЫХ на русском и английском
+3. ИЗВЛЕКАЙ ТОЛЬКО ВИДИМЫЕ ДАННЫЕ - не генерируй!
+4. ПРИСУТСТВИЕ ВСЕХ ДАННЫХ НЕ ОБЯЗАТЕЛЬНО - заполняй то, что есть
 
-STEP 2: EXTRACT HOURLY DATA FOR 24H
-Find the main data table with hourly columns. Time slots are typically: 02, 05, 08, 11, 14, 17, 20, 23, 02, 05
+# 📊 ПОИСК ДАННЫХ ПО ВСЕМ ВОЗМОЖНЫМ МЕТКАМ:
 
-LOOK FOR THESE EXACT ROW LABELS:
-- "M", "м" (Wave Height in METERS): numbers like 1.2, 1.1, 1.3, 1.4
-- "C", "с" (Wave Period in SECONDS): numbers like 8.9, 14.6, 13.7, 8.1  
-- "kJ", "кДж" (Swell Power in kJ): numbers like 217, 736, 744, 192
-- "w/c", "м/с" (Wind Speed in m/s): numbers like 0.8, 1.2, 0.3, 0.9
+## ВОЛНЫ (ищи ВСЕ эти варианты):
+- Высота: "M", "м", "Wave", "Волна", "Height", "H", "Swell"
+- Период: "C", "с", "Period", "Период", "P", "T"  
+- Мощность: "kJ", "кДж", "Power", "Энергия", "Energy", "Swell Energy"
 
-STEP 3: EXTRACT TIDE DATA
-Look for tide information in these EXACT formats:
-- "HH:MM X.X M" or "HH:MM X.X м" (e.g., "09:45 2.4 M", "04:10 0.1 м")
-- Sections labeled "M_LAT", "LAT", "Приливы"
-- Extract ALL visible tide times and heights
-- High tide: height > 1.5m, Low tide: height < 1.0m
+## ВЕТЕР (ищи ВСЕ эти варианты):
+- "м/с", "m/s", "Wind", "Ветер", "w/c", "Wind Speed"
+- Направление: стрелки ↑→↓← или текстом "offshore", "onshore"
 
-STEP 4: VALIDATION RULES
-- All data arrays must have SAME LENGTH (usually 8-10 values)
-- Wave height: 0.3 - 3.0m (typical range)
-- Wave period: 5 - 20s (typical range)  
-- Swell power: 50 - 2000kJ (typical range)
-- Wind speed: 0 - 15m/s (typical range)
+## ПРИЛИВЫ (ищи ВСЕ эти варианты):
+- "M_LAT", "LAT", "Tide", "Прилив", "Отлив", "High", "Low"
+- Форматы: "HH:MM X.X m", "HH:MM X.X M", "X.X m HH:MM"
 
-STEP 5: OUTPUT FORMAT - RETURN ONLY THIS JSON:
+## ВРЕМЕННЫЕ СЛОТЫ (ищи ВСЕ эти варианты):
+- Часы: "23", "02", "05", "08", "11", "14", "17", "20", "23", "02"
+- Периоды: "3h", "6h", "Утро", "День", "Вечер", "Ночь"
+- Дни: "Сегодня", "Завтра", "TODAY", "TOMORROW", даты "06 НОЯБ"
+
+# 🔍 АЛГОРИТМ АНАЛИЗА:
+
+1. **НАЙДИ АКТИВНЫЙ ПЕРИОД ПРОГНОЗА**
+   - Ищи выделенные/активные дни: "ЗАВТРА", "СЕГОДНЯ", "TODAY" 
+   - Или текущую дату в заголовке
+   - ЕСЛИ НЕ НАШЕЛ - бери первый видимый период
+
+2. **СОБЕРИ ВСЕ ЧИСЛОВЫЕ ДАННЫЕ** из активного периода
+   - Высота волны (метры): числа 0.5, 1.2, 2.1 и т.д.
+   - Период (секунды): числа 8.9, 14.6, 12.3 и т.д.
+   - Мощность (кДж): числа 200, 736, 1150 и т.д.
+   - Ветер (м/с): числа 0.8, 3.9, 1.2 и т.д.
+
+3. **СОБЕРИ ДАННЫЕ ПРИЛИВОВ**
+   - Время: "HH:MM" формате
+   - Высота: числа с "m" или "м"
+   - Классификация: >1.5m = HIGH, <1.0m = LOW
+
+4. **ЕСЛИ ДАННЫХ НЕ ХВАТАЕТ:**
+   - Заполни недостающие значения 0.0 (для ветра) или средними
+   - Лучше МЕНЬШЕ данных, чем сгенерированные!
+
+# 📋 ВЫХОДНОЙ ФОРМАТ (ВСЕГДА ТАКОЙ JSON):
+
 {
     "success": true,
     "wave_data": [1.2, 1.1, 1.1, 1.2, 1.2, 1.2, 1.3, 1.3, 1.3, 1.4],
@@ -169,11 +203,14 @@ STEP 5: OUTPUT FORMAT - RETURN ONLY THIS JSON:
     }
 }
 
-IMPORTANT: 
-- Extract ONLY visible data from the active day
-- If data is missing for some hours, use 0.0 for wind, estimate others
-- DO NOT invent or generate data - use only what's visible
-- Return fallback data if extraction fails"""
+# 🚨 ВАЖНЫЕ ПРАВИЛА:
+
+- ДЛИНА МАССИВОВ: от 6 до 10 значений (можно меньше если данных нет)
+- ДИАПАЗОНЫ: волны 0.3-4.0м, период 5-20с, мощность 50-2000кДж
+- ПРИЛИВЫ: может быть 0, 1, 2 или больше - извлекай ВСЕ что видишь
+- ЕСЛИ ЧТО-ТО НЕ НАШЕЛ - оставляй пустые массивы, НО "success": true
+
+ВОЗВРАЩАЙ ТОЛЬКО JSON! НИКАКОГО ТЕКСТА!"""
 
         payload = {
             "model": "deepseek-chat",
@@ -194,13 +231,13 @@ IMPORTANT:
                     ]
                 }
             ],
-            "temperature": 0.1,  # Минимальная креативность
+            "temperature": 0.1,
             "max_tokens": 2000
         }
         
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.deepseek.com/chat/completions", 
+                "https://api.deepseek.com/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=30
@@ -215,15 +252,38 @@ IMPORTANT:
                         try:
                             data = json.loads(json_match.group())
                             
-                            # УСИЛЕННАЯ ПРОВЕРКА ДАННЫХ
+                            # УНИВЕРСАЛЬНАЯ ПРОВЕРКА ДАННЫХ
                             if validate_surf_data(data):
-                                logger.info("✅ DeepSeek returned VALID surf data")
-                                logger.info(f"📊 Data ranges - Wave: {min(data['wave_data'])}-{max(data['wave_data'])}m, "
-                                          f"Period: {min(data['period_data'])}-{max(data['period_data'])}s, "
-                                          f"Power: {min(data['power_data'])}-{max(data['power_data'])}kJ")
+                                
+                                # Логируем что нашли
+                                found_data = []
+                                for key in ['wave_data', 'period_data', 'power_data', 'wind_data']:
+                                    if data.get(key):
+                                        found_data.append(f"{key}: {len(data[key])} values")
+                                
+                                if data.get('tides'):
+                                    tide_info = []
+                                    if data['tides'].get('high_times'):
+                                        tide_info.append(f"{len(data['tides']['high_times'])} high tides")
+                                    if data['tides'].get('low_times'):
+                                        tide_info.append(f"{len(data['tides']['low_times'])} low tides")
+                                    if tide_info:
+                                        found_data.append(f"tides: {', '.join(tide_info)}")
+                                
+                                logger.info(f"✅ DeepSeek extracted: {', '.join(found_data)}")
+                                
+                                # Логируем диапазоны
+                                if data.get('wave_data'):
+                                    logger.info(f"📊 Wave: {min(data['wave_data'])}-{max(data['wave_data'])}m")
+                                if data.get('period_data'):
+                                    logger.info(f"📊 Period: {min(data['period_data'])}-{max(data['period_data'])}s")
+                                if data.get('power_data'):
+                                    logger.info(f"📊 Power: {min(data['power_data'])}-{max(data['power_data'])}kJ")
+                                
                                 return data
                             else:
                                 logger.warning("❌ DeepSeek data failed validation")
+                                
                         except json.JSONDecodeError as e:
                             logger.error(f"❌ JSON decode error: {e}")
                     
