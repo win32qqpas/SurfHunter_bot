@@ -5,12 +5,15 @@ import logging
 import asyncio
 import random
 import base64
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from io import BytesIO
 
 import aiohttp
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from PIL import Image, ImageEnhance, ImageFilter
 
 from telegram import Update as TgUpdate, Bot, Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -44,24 +47,54 @@ async def keep_alive_ping():
             logger.error(f"❌ Ping error: {e}")
         await asyncio.sleep(300)
 
+def enhance_image_for_ocr(image_bytes: bytes) -> bytes:
+    """Улучшает качество изображения для лучшего OCR"""
+    try:
+        # Открываем изображение
+        image = Image.open(BytesIO(image_bytes))
+        
+        # Увеличиваем разрешение (если маленькое)
+        if image.size[0] < 800:
+            new_size = (image.size[0] * 2, image.size[1] * 2)
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Увеличиваем контраст
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2.0)  # +100% контраст
+        
+        # Увеличиваем резкость
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(2.0)
+        
+        # Легкое размытие для уменьшения шума
+        image = image.filter(ImageFilter.SMOOTH)
+        
+        # Конвертируем обратно в bytes
+        output_buffer = BytesIO()
+        image.save(output_buffer, format='JPEG', quality=95)
+        
+        logger.info("✅ Image enhanced for OCR")
+        return output_buffer.getvalue()
+        
+    except Exception as e:
+        logger.error(f"❌ Image enhancement failed: {e}")
+        return image_bytes  # Возвращаем оригинал если улучшение не удалось
+
 def generate_dynamic_fallback_data():
     """Генерирует реалистичные случайные данные для любого спота"""
     conditions = [
-        # Условия для Kuta (пляжный брейк)
         {
             "wave": [1.3, 1.3, 1.4, 1.4, 1.4, 1.4, 1.4, 1.4, 1.5, 1.5],
             "period": [14.6, 14.3, 13.9, 12.7, 12.0, 11.9, 11.7, 11.5, 11.3, 11.1],
             "power": [736, 744, 730, 628, 570, 559, 555, 553, 555, 558],
             "wind": [0.6, 1.3, 0.9, 1.3, 3.0, 3.8, 3.4, 1.9, 1.0, 0.6]
         },
-        # Условия для Balangan (рифовый брейк)
         {
             "wave": [1.7, 1.6, 1.6, 1.5, 1.5, 1.4, 1.4, 1.4, 1.3, 1.3],
             "period": [10.2, 10.2, 10.0, 9.9, 9.7, 9.8, 9.2, 9.2, 9.0, 8.9],
             "power": [586, 547, 501, 454, 412, 396, 331, 317, 291, 277],
             "wind": [1.3, 1.6, 0.6, 2.4, 3.6, 3.9, 0.6, 0.5, 0.2, 0.8]
         },
-        # Условия для Uluwatu (большие волны)
         {
             "wave": [2.1, 2.0, 1.9, 1.8, 1.7, 1.6, 1.5, 1.4, 1.3, 1.2],
             "period": [14.5, 14.0, 13.5, 13.0, 12.5, 12.0, 11.5, 11.0, 10.5, 10.0],
@@ -72,7 +105,6 @@ def generate_dynamic_fallback_data():
     
     chosen = random.choice(conditions)
     
-    # Реалистичные приливы для Бали
     return {
         "success": True,
         "source": "dynamic",
@@ -93,10 +125,9 @@ def validate_surf_data(data: Dict) -> bool:
     if not data.get('success'):
         return False
         
-    # Проверяем что есть хотя бы некоторые данные
     has_sufficient_data = False
     for key in ['wave_data', 'period_data', 'power_data', 'wind_data']:
-        if data.get(key) and len(data[key]) >= 6:  # Минимум 6 значений
+        if data.get(key) and len(data[key]) >= 6:
             has_sufficient_data = True
             break
     
@@ -104,7 +135,7 @@ def validate_surf_data(data: Dict) -> bool:
         logger.warning("❌ Insufficient data in all arrays")
         return False
     
-    # Проверка реалистичных диапазонов для существующих данных
+    # Проверка реалистичных диапазонов
     if data.get('wave_data'):
         wave_ok = 0.1 < max(data['wave_data']) < 5.0
         if not wave_ok:
@@ -123,94 +154,83 @@ def validate_surf_data(data: Dict) -> bool:
     return True
 
 async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
-    """УНИВЕРСАЛЬНЫЙ анализ скриншота Windy через DeepSeek с ОБУЧАЕМЫМ промптом"""
+    """УЛУЧШЕННЫЙ анализ скриншота Windy с двойной проверкой"""
     if not DEEPSEEK_API_KEY:
         logger.info("No DeepSeek API key, using dynamic data")
         return generate_dynamic_fallback_data()
     
     try:
-        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        # Улучшаем качество изображения для OCR
+        enhanced_image_bytes = enhance_image_for_ocr(image_bytes)
+        base64_image = base64.b64encode(enhanced_image_bytes).decode('utf-8')
         
         headers = {
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
             "Content-Type": "application/json"
         }
         
-        # 🔥 УНИВЕРСАЛЬНЫЙ ОБУЧАЕМЫЙ ПРОМПТ ДЛЯ ЛЮБЫХ СКРИНШОТОВ WINDY
-        prompt = """ТЫ - ЭКСПЕРТ ПО ПАРСИНГУ СКРИНШОТОВ WINDY.COM. Твоя задача - ТОЧНО извлечь ВСЕ числовые данные о серфинге ЛЮБОГО спота.
+        # 🔥 УЛУЧШЕННЫЙ ПРОМПТ ДЛЯ ТОЧНОГО OCR
+        prompt = """
+ТЫ - ТОЧНАЯ OCR-СИСТЕМА ДЛЯ СКРИНШОТОВ WINDY. ТВОЯ ЗАДАЧА: ИЗВЛЕЧЬ ТОЛЬКО ТЕ ЦИФРЫ, КОТОРЫЕ ВИДИШЬ.
 
-# 🎯 КЛЮЧЕВЫЕ ПРИНЦИПЫ:
-1. АНАЛИЗИРУЙ ЛЮБОЙ ФОРМАТ ДАННЫХ - таблицы, графики, блоки
-2. ИЩИ ВСЕ ВОЗМОЖНЫЕ МЕТКИ ДАННЫХ на русском и английском
-3. ИЗВЛЕКАЙ ТОЛЬКО ВИДИМЫЕ ДАННЫЕ - не генерируй!
-4. ПРИСУТСТВИЕ ВСЕХ ДАННЫХ НЕ ОБЯЗАТЕЛЬНО - заполняй то, что есть
+# 🎯 КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
+1. НИКОГДА НЕ ПРЕДПОЛАГАЙ И НЕ ГЕНЕРИРУЙ ДАННЫЕ
+2. ЕСЛИ ЦИФРА ЧАСТИЧНО ВИДНА ИЛИ НЕЧЕТКАЯ - НЕ ИСПОЛЬЗУЙ ЕЁ
+3. ЕСЛИ ДАННЫХ НЕТ - ОСТАВЛЯЙ ПУСТЫЕ МАССИВЫ []
 
-# 📊 ПОИСК ДАННЫХ ПО ВСЕМ ВОЗМОЖНЫМ МЕТКАМ:
+# 🔍 ПОШАГОВАЯ ИНСТРУКЦИЯ ДЛЯ ИЗВЛЕЧЕНИЯ:
 
-## ВОЛНЫ (ищи ВСЕ эти варианты):
-- Высота: "M", "м", "Wave", "Волна", "Height", "H", "Swell"
-- Период: "C", "с", "Period", "Период", "P", "T"  
-- Мощность: "kJ", "кДж", "Power", "Энергия", "Energy", "Swell Energy"
+## ШАГ 1: НАЙДИ ГЛАВНУЮ ТАБЛИЦУ С ЧАСАМИ
+- Ищи горизонтальную таблицу с временными слотами: 02, 05, 08, 11, 14, 17, 20, 23
+- Это ОСНОВНАЯ таблица с почасовыми данными
 
-## ВЕТЕР (ищи ВСЕ эти варианты):
-- "м/с", "m/s", "Wind", "Ветер", "w/c", "Wind Speed"
-- Направление: стрелки ↑→↓← или текстом "offshore", "onshore"
+## ШАГ 2: ИЩИ ТОЧНО ЭТИ МЕТКИ В СТОЛБЦАХ:
+- ВОЛНЫ: "M", "м" - числа как 1.2, 0.8, 2.1 (МЕТРЫ)
+- ПЕРИОД: "C", "с" - числа как 8.9, 14.6, 12.3 (СЕКУНДЫ)  
+- МОЩНОСТЬ: "kJ", "кДж" - числа как 217, 736, 1150 (кДж)
+- ВЕТЕР: "м/с", "m/s" - числа как 0.8, 3.9, 1.2 (м/с)
 
-## ПРИЛИВЫ (ищи ВСЕ эти варианты):
-- "M_LAT", "LAT", "Tide", "Прилив", "Отлив", "High", "Low"
-- Форматы: "HH:MM X.X m", "HH:MM X.X M", "X.X m HH:MM"
+## ШАГ 3: ПРИЛИВЫ - ИЩИ ФОРМАТ "ЧЧ:ММ Х.Х м":
+- Пример: "09:45 2.4 м", "04:10 0.1 м"
+- Высота >1.5м = прилив, <1.0м = отлив
 
-## ВРЕМЕННЫЕ СЛОТЫ (ищи ВСЕ эти варианты):
-- Часы: "23", "02", "05", "08", "11", "14", "17", "20", "23", "02"
-- Периоды: "3h", "6h", "Утро", "День", "Вечер", "Ночь"
-- Дни: "Сегодня", "Завтра", "TODAY", "TOMORROW", даты "06 НОЯБ"
+## ШАГ 4: ПЕРЕПРОВЕРЬ КАЖДОЕ ЗНАЧЕНИЕ:
+- Убедись что цифры соответствуют меткам
+- Проверь что все значения в одном ряду
+- Если есть сомнения - не используй значение
 
-# 🔍 АЛГОРИТМ АНАЛИЗА:
+# 📊 ПРИМЕР РЕАЛЬНЫХ ДАННЫХ:
 
-1. **НАЙДИ АКТИВНЫЙ ПЕРИОД ПРОГНОЗА**
-   - Ищи выделенные/активные дни: "ЗАВТРА", "СЕГОДНЯ", "TODAY" 
-   - Или текущую дату в заголовке
-   - ЕСЛИ НЕ НАШЕЛ - бери первый видимый период
+СКРИНШОТ KUTA:
+wave_data: [1.2, 1.1, 1.1, 1.2, 1.2, 1.2, 1.3, 1.3]
+period_data: [8.9, 8.8, 8.6, 8.4, 8.2, 8.1, 13.7, 14.6]
+power_data: [217, 205, 192, 194, 194, 200, 607, 736]
+wind_data: [0.8, 1.0, 0.8, 0.3, 0.7, 1.2, 1.0, 0.9]
 
-2. **СОБЕРИ ВСЕ ЧИСЛОВЫЕ ДАННЫЕ** из активного периода
-   - Высота волны (метры): числа 0.5, 1.2, 2.1 и т.д.
-   - Период (секунды): числа 8.9, 14.6, 12.3 и т.д.
-   - Мощность (кДж): числа 200, 736, 1150 и т.д.
-   - Ветер (м/с): числа 0.8, 3.9, 1.2 и т.д.
+СКРИНШОТ ULUWATU:
+wave_data: [1.6, 1.7, 1.8, 1.8, 1.8, 1.8, 1.8, 1.8]
+period_data: [14.7, 14.3, 13.6, 12.3, 12.1, 12.0, 11.8, 11.6]
+power_data: [1151, 1179, 1134, 959, 946, 933, 922, 912]
+wind_data: [1.1, 0.7, 0.2, 0.8, 2.9, 3.8, 3.9, 3.1]
 
-3. **СОБЕРИ ДАННЫЕ ПРИЛИВОВ**
-   - Время: "HH:MM" формате
-   - Высота: числа с "m" или "м"
-   - Классификация: >1.5m = HIGH, <1.0m = LOW
-
-4. **ЕСЛИ ДАННЫХ НЕ ХВАТАЕТ:**
-   - Заполни недостающие значения 0.0 (для ветра) или средними
-   - Лучше МЕНЬШЕ данных, чем сгенерированные!
-
-# 📋 ВЫХОДНОЙ ФОРМАТ (ВСЕГДА ТАКОЙ JSON):
+# 🚨 ЕСЛИ НЕ УВЕРЕН - ОСТАВЛЯЙ ПУСТОЙ МАССИВ!
 
 {
     "success": true,
-    "wave_data": [1.2, 1.1, 1.1, 1.2, 1.2, 1.2, 1.3, 1.3, 1.3, 1.4],
-    "period_data": [8.9, 8.8, 8.6, 8.4, 8.2, 8.1, 13.7, 14.6, 14.3, 13.9],
-    "power_data": [217, 205, 192, 194, 194, 200, 607, 736, 744, 730],
-    "wind_data": [0.8, 1.0, 0.8, 0.3, 0.7, 1.2, 1.0, 0.9, 0.2, 0.0],
+    "wave_data": [],
+    "period_data": [],
+    "power_data": [], 
+    "wind_data": [],
     "tides": {
-        "high_times": ["09:45"],
-        "high_heights": [2.4],
+        "high_times": [],
+        "high_heights": [],
         "low_times": [],
         "low_heights": []
     }
 }
 
-# 🚨 ВАЖНЫЕ ПРАВИЛА:
-
-- ДЛИНА МАССИВОВ: от 6 до 10 значений (можно меньше если данных нет)
-- ДИАПАЗОНЫ: волны 0.3-4.0м, период 5-20с, мощность 50-2000кДж
-- ПРИЛИВЫ: может быть 0, 1, 2 или больше - извлекай ВСЕ что видишь
-- ЕСЛИ ЧТО-ТО НЕ НАШЕЛ - оставляй пустые массивы, НО "success": true
-
-ВОЗВРАЩАЙ ТОЛЬКО JSON! НИКАКОГО ТЕКСТА!"""
+ВОЗВРАЩАЙ ТОЛЬКО JSON! НИКАКИХ КОММЕНТАРИЕВ!
+"""
 
         payload = {
             "model": "deepseek-chat",
@@ -231,71 +251,132 @@ async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str
                     ]
                 }
             ],
-            "temperature": 0.1,
-            "max_tokens": 2000
+            "temperature": 0.05,  # ОЧЕНЬ низкая температура для максимальной точности
+            "max_tokens": 2500
         }
+        
+        # Первый запрос - основная обработка
+        logger.info("🔄 Первый проход анализа DeepSeek...")
+        start_time = time.time()
         
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://api.deepseek.com/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=45  # Увеличиваем таймаут до 45 секунд
             ) as response:
+                
                 if response.status == 200:
                     result = await response.json()
                     content = result["choices"][0]["message"]["content"]
+                    first_pass_time = time.time() - start_time
                     
-                    # Ищем JSON в ответе
+                    logger.info(f"✅ Первый проход завершен за {first_pass_time:.1f}с")
+                    
+                    # Извлекаем JSON из первого ответа
                     json_match = re.search(r'\{.*\}', content, re.DOTALL)
                     if json_match:
                         try:
                             data = json.loads(json_match.group())
                             
-                            # УНИВЕРСАЛЬНАЯ ПРОВЕРКА ДАННЫХ
+                            # ВАЖНО: Второй запрос для проверки
+                            if data.get('success') and any(data.values()):
+                                logger.info("🔄 Второй проход для проверки данных...")
+                                
+                                # Второй запрос с фокусом на проверку
+                                verification_prompt = """
+ПЕРЕПРОВЕРЬ ИЗВЛЕЧЕННЫЕ ДАННЫЕ. 
+
+Сравни эти данные с тем что видишь на скриншоте:
+{}
+
+ЕСЛИ ВИДИШЬ ОШИБКИ - исправь ТОЛЬКО явные ошибки.
+ЕСЛИ ВСЁ ВЕРНО - верни те же данные.
+ЕСЛИ НЕ УВЕРЕН - оставь оригинальные значения.
+
+ВЕРНИ ТОЛЬКО JSON БЕЗ КОММЕНТАРИЕВ!""".format(json.dumps(data, indent=2))
+
+                                verification_payload = {
+                                    "model": "deepseek-chat",
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": [
+                                                {
+                                                    "type": "text",
+                                                    "text": verification_prompt
+                                                },
+                                                {
+                                                    "type": "image_url",
+                                                    "image_url": {
+                                                        "url": f"data:image/jpeg;base64,{base64_image}"
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    ],
+                                    "temperature": 0.05,
+                                    "max_tokens": 2000
+                                }
+                                
+                                async with session.post(
+                                    "https://api.deepseek.com/chat/completions",
+                                    headers=headers,
+                                    json=verification_payload,
+                                    timeout=30
+                                ) as verification_response:
+                                    
+                                    if verification_response.status == 200:
+                                        verification_result = await verification_response.json()
+                                        verification_content = verification_result["choices"][0]["message"]["content"]
+                                        
+                                        # Извлекаем проверенные данные
+                                        verification_json_match = re.search(r'\{.*\}', verification_content, re.DOTALL)
+                                        if verification_json_match:
+                                            verified_data = json.loads(verification_json_match.group())
+                                            
+                                            if validate_surf_data(verified_data):
+                                                total_time = time.time() - start_time
+                                                logger.info(f"✅ Двойная проверка завершена за {total_time:.1f}с")
+                                                
+                                                # Логируем результаты
+                                                found_data = []
+                                                for key in ['wave_data', 'period_data', 'power_data', 'wind_data']:
+                                                    if verified_data.get(key):
+                                                        found_data.append(f"{key}: {len(verified_data[key])} values")
+                                                
+                                                logger.info(f"📊 Итоговые данные: {', '.join(found_data)}")
+                                                return verified_data
+                            
+                            # Если второй проход не удался, используем данные первого
                             if validate_surf_data(data):
-                                
-                                # Логируем что нашли
-                                found_data = []
-                                for key in ['wave_data', 'period_data', 'power_data', 'wind_data']:
-                                    if data.get(key):
-                                        found_data.append(f"{key}: {len(data[key])} values")
-                                
-                                if data.get('tides'):
-                                    tide_info = []
-                                    if data['tides'].get('high_times'):
-                                        tide_info.append(f"{len(data['tides']['high_times'])} high tides")
-                                    if data['tides'].get('low_times'):
-                                        tide_info.append(f"{len(data['tides']['low_times'])} low tides")
-                                    if tide_info:
-                                        found_data.append(f"tides: {', '.join(tide_info)}")
-                                
-                                logger.info(f"✅ DeepSeek extracted: {', '.join(found_data)}")
-                                
-                                # Логируем диапазоны
-                                if data.get('wave_data'):
-                                    logger.info(f"📊 Wave: {min(data['wave_data'])}-{max(data['wave_data'])}m")
-                                if data.get('period_data'):
-                                    logger.info(f"📊 Period: {min(data['period_data'])}-{max(data['period_data'])}s")
-                                if data.get('power_data'):
-                                    logger.info(f"📊 Power: {min(data['power_data'])}-{max(data['power_data'])}kJ")
-                                
+                                logger.info("✅ Используем данные первого прохода")
                                 return data
-                            else:
-                                logger.warning("❌ DeepSeek data failed validation")
                                 
                         except json.JSONDecodeError as e:
                             logger.error(f"❌ JSON decode error: {e}")
                     
-                    logger.warning("❌ DeepSeek returned INVALID data, using fallback")
-                    return generate_dynamic_fallback_data()
-                else:
-                    logger.warning(f"⚠️ DeepSeek API error {response.status}, using fallback")
+                    logger.warning("❌ DeepSeek не вернул валидные данные")
                     return generate_dynamic_fallback_data()
                     
-    except Exception as e:
-        logger.error(f"❌ DeepSeek analysis error: {e}, using fallback")
+                else:
+                    logger.warning(f"⚠️ DeepSeek API error {response.status}")
+                    return generate_dynamic_fallback_data()
+                    
+    except asyncio.TimeoutError:
+        logger.error("❌ DeepSeek timeout after 45 seconds")
         return generate_dynamic_fallback_data()
+    except Exception as e:
+        logger.error(f"❌ DeepSeek analysis error: {e}")
+        return generate_dynamic_fallback_data()
+
+# [ОСТАЛЬНЫЕ ФУНКЦИИ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ]
+# calculate_ranges, generate_wave_comment, generate_period_comment, 
+# generate_power_comment, generate_wind_comment, analyze_tides_correctly,
+# generate_overall_verdict, get_best_time_recommendation, build_poseidon_report,
+# handle_photo, handle_message, parse_caption_for_location_date
+# ... (все остальные функции остаются без изменений)
 
 def calculate_ranges(data_list):
     """Рассчитывает диапазон значений"""
@@ -590,7 +671,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        await update.message.reply_text("Сейчас поднимем для тебя, родной, со дна рукописи, 📜надеюсь не отсырели!")
+        await update.message.reply_text("🌀 Улучшаю качество изображения и анализирую скриншот Windy...")
         
         photo = update.message.photo[-1]
         photo_file = await photo.get_file()
