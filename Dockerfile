@@ -1,11 +1,19 @@
-def extract_data_with_ocr(image_bytes: bytes) -> Dict[str, Any]:
-    """Упрощенная версия без OCR - сразу возвращает fallback"""
-    logger.info("OCR disabled, using dynamic fallback")
-    return generate_dynamic_fallback_data()
+FROM python:3.11-slim
 
-# И в функции analyze_windy_screenshot_with_deepseek закомментируем вызов OCR:
-async def analyze_windy_screenshot_with_deepseek(image_bytes: bytes) -> Dict[str, Any]:
-    # ... остальной код ...
-    
-    # Если DeepSeek не сработал, используем динамический fallback
-    return generate_dynamic_fallback_data()
+WORKDIR /app
+
+# Устанавливаем системные зависимости включая Tesseract
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-rus \
+    tesseract-ocr-eng \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . .
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000"]
