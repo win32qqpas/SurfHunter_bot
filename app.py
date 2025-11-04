@@ -23,8 +23,6 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not found")
-if not DEEPSEEK_API_KEY:
-    raise ValueError("DEEPSEEK_API_KEY not found")
 
 app = FastAPI(title="Poseidon V4")
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -404,7 +402,7 @@ async def build_poseidon_report(windy_data: Dict, location: str, date: str) -> s
     # Анализируем временные периоды
     time_periods = analyze_time_periods(wind_data, power_data, period_data)
     
-    # Формируем отчет
+    # Формируем отчет - ВАЖНО: правильное закрытие f-строки
     report = f"""🔱 ПОСЕЙДОН ВНЯЛ ТВОИМ МОЛИТВАМ 🙏🏻
 
 На {date.split('-')[2]} ноября {location} готовит сюрприз. Лови мой вердикт, не перебивай.
